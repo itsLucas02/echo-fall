@@ -6,7 +6,7 @@ import { AudioDirector } from './audio';
 import { LEVEL_BLUEPRINT } from './level';
 
 type BarrierBody = { body: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
-type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; open: boolean };
+type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; latchesOpen: boolean; open: boolean };
 type LiftDevice = { platform: Phaser.GameObjects.Rectangle; plate: Phaser.GameObjects.Rectangle; startX: number; endX: number; direction: number; powered: boolean };
 type ParallaxLayer = { images: Phaser.GameObjects.Image[]; width: number; rate: number };
 
@@ -15,6 +15,7 @@ const HEIGHT = 540;
 const WORLD_WIDTH = LEVEL_BLUEPRINT.worldWidth;
 const GROUND_Y = 486;
 const TOTAL_SHARDS = 18;
+const ECHO_DURATION_MS = 7000;
 const audio = new AudioDirector();
 
 const ui = {
@@ -262,19 +263,19 @@ class GameScene extends Phaser.Scene {
   private addGate(plateX: number, gateX: number) {
     const plate = this.addPlate(plateX);
     this.drawCable(plateX, gateX);
-    this.gates.push({ plates: [plate], bodies: [this.addBarrierBody(gateX)], requireAll: false, open: false });
+    this.gates.push({ plates: [plate], bodies: [this.addBarrierBody(gateX)], requireAll: false, latchesOpen: false, open: false });
   }
 
   private addShutterRun(plateX: number, gateXs: number[]) {
     const plate = this.addPlate(plateX);
     gateXs.forEach(gateX => this.drawCable(plateX, gateX));
-    this.gates.push({ plates: [plate], bodies: gateXs.map(gateX => this.addBarrierBody(gateX)), requireAll: false, open: false });
+    this.gates.push({ plates: [plate], bodies: gateXs.map(gateX => this.addBarrierBody(gateX)), requireAll: false, latchesOpen: false, open: false });
   }
 
   private addDualGate(plateXs: number[], gateX: number) {
     const plates = plateXs.map(x => this.addPlate(x));
     plateXs.forEach(x => this.drawCable(x, gateX));
-    this.gates.push({ plates, bodies: [this.addBarrierBody(gateX)], requireAll: true, open: false });
+    this.gates.push({ plates, bodies: [this.addBarrierBody(gateX)], requireAll: true, latchesOpen: true, open: false });
   }
 
   private addPoweredLift(plateX: number, startX: number, endX: number) {
@@ -410,8 +411,8 @@ class GameScene extends Phaser.Scene {
     if (this.recording) {
       const elapsed = time - this.recordStarted;
       this.echoFrames.push({ t: elapsed, x: this.player.x, y: this.player.y, flipX: this.player.flipX });
-      ui.echo.textContent = `REC ${(Math.max(0, 6 - elapsed / 1000)).toFixed(1)}s`;
-      if (elapsed >= 6000) this.finishRecording();
+      ui.echo.textContent = `REC ${(Math.max(0, ECHO_DURATION_MS / 1000 - elapsed / 1000)).toFixed(1)}s`;
+      if (elapsed >= ECHO_DURATION_MS) this.finishRecording();
     }
     this.updateEcho(time);
     this.updateGates();
@@ -422,7 +423,7 @@ class GameScene extends Phaser.Scene {
     if (this.player.x > 1180 && this.player.x < 1330) this.hintOnce('echo', 'Record a still echo on the plate, then cross before its timeline ends.');
     if (this.player.x > 2500 && this.player.x < 2660) this.hintOnce('lift', 'The brass circuit powers the lift only while you or your echo holds it.');
     if (this.player.x > 4100 && this.player.x < 4240) this.hintOnce('shutters', 'One sustained echo can hold all three shutters open.');
-    if (this.player.x > 5400 && this.player.x < 5510) this.hintOnce('dual', 'The vault needs two signals: leave the echo, then reach the second lock.');
+    if (this.player.x > 5400 && this.player.x < 5510) this.hintOnce('dual', 'Leave an echo on the first lock, then touch the second. The vault will stay open.');
   }
 
   private updatePlayerAnimation(grounded: boolean, moving: boolean) {
@@ -511,7 +512,8 @@ class GameScene extends Phaser.Scene {
   private updateGates() {
     this.gates.forEach(gate => {
       const plateStates = gate.plates.map(plate => this.isPlateActive(plate));
-      const shouldOpen = gate.requireAll ? plateStates.every(Boolean) : plateStates.some(Boolean);
+      const activated = gate.requireAll ? plateStates.every(Boolean) : plateStates.some(Boolean);
+      const shouldOpen = gate.latchesOpen ? gate.open || activated : activated;
       gate.plates.forEach((plate, index) => plate.setFillStyle(plateStates[index] ? 0xe0a85a : 0xb68247));
       if (shouldOpen === gate.open) return;
       gate.open = shouldOpen;
