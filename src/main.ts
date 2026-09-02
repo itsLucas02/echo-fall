@@ -8,6 +8,7 @@ import { LEVEL_BLUEPRINT } from './level';
 type BarrierBody = { body: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
 type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; open: boolean };
 type LiftDevice = { platform: Phaser.GameObjects.Rectangle; plate: Phaser.GameObjects.Rectangle; startX: number; endX: number; direction: number; powered: boolean };
+type ParallaxLayer = { images: Phaser.GameObjects.Image[]; width: number; rate: number };
 
 const WIDTH = 960;
 const HEIGHT = 540;
@@ -32,6 +33,7 @@ const ui = {
 };
 
 class GameScene extends Phaser.Scene {
+  private parallaxLayers: ParallaxLayer[] = [];
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
   private enemies!: Phaser.Physics.Arcade.Group;
@@ -65,7 +67,10 @@ class GameScene extends Phaser.Scene {
   constructor() { super('game'); }
 
   preload() {
-    this.load.image('courier-source', '/assets/kite-sprite-source.png');
+    this.load.image('courier-source', 'assets/kite-sprite-source.png');
+    this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
+    this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
+    this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
   }
 
   create() {
@@ -179,25 +184,18 @@ class GameScene extends Phaser.Scene {
   }
 
   private drawWorld() {
-    this.cameras.main.setBackgroundColor('#182422');
-    const bg = this.add.graphics().setScrollFactor(0.12).setDepth(-20);
-    bg.fillStyle(0x1e302c).fillRect(0, 0, WORLD_WIDTH, HEIGHT);
-    bg.fillStyle(0x2a4039, .9);
-    for (let x = -200; x < WORLD_WIDTH; x += 310) {
-      const h = 90 + ((x / 31) % 100);
-      bg.fillTriangle(x, 430, x + 180, 430 - h, x + 390, 430);
-    }
-    bg.fillStyle(0x8ea89d, .35);
-    for (let i = 0; i < 80; i++) bg.fillCircle((i * 173) % WORLD_WIDTH, 30 + (i * 97) % 270, i % 4 === 0 ? 2 : 1);
-
-    const skyline = this.add.graphics().setScrollFactor(0.45).setDepth(-10);
-    skyline.fillStyle(0x15221f, .85);
-    for (let x = 0; x < WORLD_WIDTH; x += 230) {
-      const h = 90 + (x * 7) % 160;
-      skyline.fillRect(x, GROUND_Y - h, 110, h);
-      skyline.fillCircle(x + 55, GROUND_Y - h, 55);
-      skyline.lineStyle(5, 0x334c45, .7).strokeCircle(x + 55, GROUND_Y - h, 30);
-    }
+    this.cameras.main.setBackgroundColor('#7ca99c');
+    const imageScale = HEIGHT / 724;
+    const layerWidth = 2172 * imageScale;
+    const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
+      const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
+        .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
+      this.parallaxLayers.push({ images, width: layerWidth, rate });
+    };
+    this.parallaxLayers = [];
+    addLayer('malaysia-skyline', .08, -30);
+    addLayer('malaysia-midground', .24, -20, .88);
+    addLayer('malaysia-foreground', .46, .5, .82);
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
@@ -354,6 +352,12 @@ class GameScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number) {
+    const cameraX = this.cameras.main.scrollX;
+    this.parallaxLayers.forEach(layer => {
+      const offset = -(cameraX * layer.rate % layer.width);
+      layer.images[0].x = offset;
+      layer.images[1].x = offset + layer.width;
+    });
     if (!this.gameStarted || this.gameEnded || this.paused) return;
     this.runElapsedMs += delta;
     const timerTick = Math.floor(this.runElapsedMs / 100);
