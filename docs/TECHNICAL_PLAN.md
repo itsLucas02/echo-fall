@@ -11,7 +11,7 @@
 
 ## Architecture
 
-The MVP uses one Phaser game scene for level state and a small DOM shell for menus and status. Runtime textures are generated with Phaser Graphics so the game is self-contained and legally distinct.
+The MVP uses one Phaser game scene for level state and a small DOM shell for menus and status. Gameplay textures are generated with Phaser Graphics; the courier and three Malaysian parallax layers are local PNG assets.
 
 The level spans 7,800 pixels and is divided into arrival, echo-door, powered-lift, shutter-run, dual-lock, and vault zones. Puzzle gates use full-height barriers and reserved clearance areas so traversal platforms cannot bypass them.
 
@@ -27,7 +27,7 @@ Sound is generated through the browser Web Audio API after the first user gestur
 
 ## Time Echo
 
-The game samples player position and facing during a recording window capped at six seconds. Releasing the recording creates one translucent replay. Pressure plates accept overlap from either the player or the active echo. Starting a new recording replaces the previous echo.
+The game samples player position and facing during a recording window capped at seven seconds. Releasing the recording creates one translucent replay. Pressure plates accept overlap from either the player or the active echo. Starting a new recording replaces the previous echo. Temporary gates close when their plates are released; the final two-plate vault latches open after both locks are activated together.
 
 ## Delivery Sequence
 

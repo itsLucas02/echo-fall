@@ -15,12 +15,12 @@ The player controls a courier automaton carrying a damaged time core through an 
 - Acceleration, friction, gravity, collision, and camera follow
 - One enemy type, spike hazards, collectible shards, and score HUD
 - Death, checkpoint, respawn, pause, restart, and victory states
-- One six-second Time Echo recording with positional playback
+- One seven-second Time Echo recording with positional playback
 - Echo door, powered lift, timed shutter run, and dual-lock vault
 - Buffered jumps and coyote time without double jump
 - Run timer, persistent best time, shard challenge, and completion ranks
 - Procedural ambience and action-specific sound effects with mute control
-- Original code-rendered art direction and procedural scenery
+- Original courier art with Malaysian skyline, architecture, and tropical parallax scenery
 
 ## Deferred
 
@@ -31,7 +31,7 @@ The player controls a courier automaton carrying a damaged time core through an 
 ## Definition of Done
 
 - A player can start, finish, lose, retry, and restart the game.
-- All three gates can be solved with Time Echo.
+- All four echo encounters can be solved with Time Echo.
 - The production build succeeds without TypeScript errors.
 - The game is usable at desktop and compact browser sizes.
 - No Nintendo names, art, maps, audio, or branding are used.
