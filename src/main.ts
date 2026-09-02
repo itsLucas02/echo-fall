@@ -196,6 +196,18 @@ class GameScene extends Phaser.Scene {
     addLayer('malaysia-skyline', .08, -30);
     addLayer('malaysia-midground', .24, -20, .88);
     addLayer('malaysia-foreground', .46, .5, .82);
+
+    const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
+    const viewportBottom = Math.max(HEIGHT, this.scale.height);
+    abyss.fillStyle(0x10201e, .72).fillRect(0, GROUND_Y + 8, WIDTH, 12);
+    abyss.fillStyle(0x0a1514, .86).fillRect(0, GROUND_Y + 20, WIDTH, 14);
+    abyss.fillStyle(0x050b0b, .96).fillRect(0, GROUND_Y + 34, WIDTH, viewportBottom - GROUND_Y - 34);
+    abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, GROUND_Y + 12, WIDTH, GROUND_Y + 12);
+    for (let x = 24; x < WIDTH; x += 68) {
+      const depth = 12 + (x % 4) * 7;
+      abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, GROUND_Y + 17, x, GROUND_Y + 17 + depth);
+      abyss.fillStyle(0xd6a45d, .38).fillCircle(x, GROUND_Y + 19 + depth, 1.5);
+    }
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
