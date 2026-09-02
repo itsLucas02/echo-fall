@@ -6,7 +6,7 @@ import { AudioDirector } from './audio';
 import { LEVEL_BLUEPRINT } from './level';
 
 type BarrierBody = { body: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
-type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; latchesOpen: boolean; open: boolean };
+type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; latchesOpen: boolean; open: boolean; closeDelayMs?: number; closeTimer?: Phaser.Time.TimerEvent };
 type LiftDevice = { platform: Phaser.GameObjects.Rectangle; plate: Phaser.GameObjects.Rectangle; startX: number; endX: number; direction: number; powered: boolean };
 type ParallaxLayer = { images: Phaser.GameObjects.Image[]; width: number; rate: number };
 
@@ -275,7 +275,7 @@ class GameScene extends Phaser.Scene {
   private addDualGate(plateXs: number[], gateX: number) {
     const plates = plateXs.map(x => this.addPlate(x));
     plateXs.forEach(x => this.drawCable(x, gateX));
-    this.gates.push({ plates, bodies: [this.addBarrierBody(gateX)], requireAll: true, latchesOpen: true, open: false });
+    this.gates.push({ plates, bodies: [this.addBarrierBody(gateX)], requireAll: true, latchesOpen: true, open: false, closeDelayMs: 3000 });
   }
 
   private addPoweredLift(plateX: number, startX: number, endX: number) {
@@ -423,7 +423,7 @@ class GameScene extends Phaser.Scene {
     if (this.player.x > 1180 && this.player.x < 1330) this.hintOnce('echo', 'Record a still echo on the plate, then cross before its timeline ends.');
     if (this.player.x > 2500 && this.player.x < 2660) this.hintOnce('lift', 'The brass circuit powers the lift only while you or your echo holds it.');
     if (this.player.x > 4100 && this.player.x < 4240) this.hintOnce('shutters', 'One sustained echo can hold all three shutters open.');
-    if (this.player.x > 5400 && this.player.x < 5510) this.hintOnce('dual', 'Leave an echo on the first lock, then touch the second. The vault will stay open.');
+    if (this.player.x > 5400 && this.player.x < 5510) this.hintOnce('dual', 'Hold both locks — release one and the vault starts closing. Reach the gate in time.');
   }
 
   private updatePlayerAnimation(grounded: boolean, moving: boolean) {
@@ -515,26 +515,54 @@ class GameScene extends Phaser.Scene {
       const activated = gate.requireAll ? plateStates.every(Boolean) : plateStates.some(Boolean);
       const shouldOpen = gate.latchesOpen ? gate.open || activated : activated;
       gate.plates.forEach((plate, index) => plate.setFillStyle(plateStates[index] ? 0xe0a85a : 0xb68247));
+
+      if (gate.closeDelayMs !== undefined) {
+        if (activated && !gate.open) this.setGateOpen(gate, true);
+        else if (!activated && gate.open) this.armGateClose(gate);
+        else if (activated && gate.closeTimer) this.disarmGateClose(gate);
+        return;
+      }
+
       if (shouldOpen === gate.open) return;
-      gate.open = shouldOpen;
-      audio.play(shouldOpen ? 'plate' : 'gate');
-      gate.bodies.forEach(barrier => {
-        const body = barrier.body.body as Phaser.Physics.Arcade.StaticBody;
-        body.enable = false;
-        this.tweens.killTweensOf(barrier.body);
-        this.tweens.add({
-          targets: barrier.body,
-          y: shouldOpen ? barrier.openY : barrier.closedY,
-          alpha: shouldOpen ? .2 : 1,
-          duration: shouldOpen ? 320 : 220,
-          ease: shouldOpen ? 'Cubic.Out' : 'Cubic.In',
-          onComplete: () => {
-            body.updateFromGameObject();
-            body.enable = !shouldOpen;
-          },
-        });
+      this.setGateOpen(gate, shouldOpen);
+    });
+  }
+
+  private setGateOpen(gate: Gate, opening: boolean) {
+    if (gate.open === opening) return;
+    gate.open = opening;
+    audio.play(opening ? 'plate' : 'gate');
+    gate.bodies.forEach(barrier => {
+      const body = barrier.body.body as Phaser.Physics.Arcade.StaticBody;
+      body.enable = false;
+      this.tweens.killTweensOf(barrier.body);
+      this.tweens.add({
+        targets: barrier.body,
+        y: opening ? barrier.openY : barrier.closedY,
+        alpha: opening ? .2 : 1,
+        duration: opening ? 320 : 220,
+        ease: opening ? 'Cubic.Out' : 'Cubic.In',
+        onComplete: () => {
+          body.updateFromGameObject();
+          body.enable = !opening;
+        },
       });
     });
+  }
+
+  private armGateClose(gate: Gate) {
+    if (gate.closeTimer || gate.closeDelayMs === undefined) return;
+    audio.play('gate');
+    gate.closeTimer = this.time.delayedCall(gate.closeDelayMs, () => {
+      gate.closeTimer = undefined;
+      this.setGateOpen(gate, false);
+    });
+  }
+
+  private disarmGateClose(gate: Gate) {
+    if (!gate.closeTimer) return;
+    gate.closeTimer.remove(false);
+    gate.closeTimer = undefined;
   }
 
   private isPlateActive(plate: Phaser.GameObjects.Rectangle) {
