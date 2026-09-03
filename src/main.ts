@@ -8,7 +8,18 @@ import { LEVEL_BLUEPRINT } from './level';
 type BarrierBody = { body: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
 type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; latchesOpen: boolean; open: boolean; closeDelayMs?: number; closeTimer?: Phaser.Time.TimerEvent };
 type LiftDevice = { platform: Phaser.GameObjects.Rectangle; plate: Phaser.GameObjects.Rectangle; startX: number; endX: number; direction: number; powered: boolean };
-type ParallaxLayer = { images: Phaser.GameObjects.Image[]; width: number; rate: number };
+type ParallaxLayer = {
+  texture: string;
+  images: Phaser.GameObjects.Image[];
+  width: number;
+  scale: number;
+  baseY: number;
+  rate: number;
+  depth: number;
+  alpha: number;
+  kind: 'play' | 'sky' | 'under';
+  overlap: number;
+};
 
 const WIDTH = 960;
 const HEIGHT = 540;
@@ -35,6 +46,9 @@ const ui = {
 
 class GameScene extends Phaser.Scene {
   private parallaxLayers: ParallaxLayer[] = [];
+  private abyssGfx?: Phaser.GameObjects.Graphics;
+  private bandOffset = 0;
+  getBandOffset() { return this.bandOffset; }
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
   private enemies!: Phaser.Physics.Arcade.Group;
@@ -72,6 +86,8 @@ class GameScene extends Phaser.Scene {
     this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
     this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
     this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
+    this.load.image('skyline-sky', 'assets/skyline-new-generated.png');
+    this.load.image('dark-underground', 'assets/dark-underground.png');
   }
 
   create() {
@@ -101,10 +117,10 @@ class GameScene extends Phaser.Scene {
     ui.echo.textContent = 'READY';
     ui.checkpoint.textContent = 'OFFLINE';
     this.physics.world.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
-    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
     this.makeTextures();
     this.buildCourierAtlas();
     this.drawWorld();
+    this.layoutParallax();
     this.buildLevel();
     this.createPlayer();
     this.createEnemies();
@@ -114,8 +130,15 @@ class GameScene extends Phaser.Scene {
     this.bindPhysics();
     this.cameras.main.startFollow(this.player, true, 0.085, 0.085, -120, 50);
     this.cameras.main.setDeadzone(210, 90);
+    this.scale.off('resize', this.onResize, this);
+    this.scale.on('resize', this.onResize, this);
+    this.parallaxLayers.forEach(layer => this.positionLayer(layer));
     this.showMessage('Reach the time vault. The city is waiting.', 3200);
     if (!this.hasEverStarted) this.scene.pause();
+  }
+
+  private onResize() {
+    this.layoutParallax();
   }
 
   private makeTextures() {
@@ -186,29 +209,92 @@ class GameScene extends Phaser.Scene {
 
   private drawWorld() {
     this.cameras.main.setBackgroundColor('#7ca99c');
-    const imageScale = HEIGHT / 724;
-    const layerWidth = 2172 * imageScale;
-    const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
-      const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
-        .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
-      this.parallaxLayers.push({ images, width: layerWidth, rate });
-    };
-    this.parallaxLayers = [];
-    addLayer('malaysia-skyline', .08, -30);
-    addLayer('malaysia-midground', .24, -20, .88);
-    addLayer('malaysia-foreground', .46, .5, .82);
+    const baseScale = HEIGHT / 724;
+    const layerSpecs: ReadonlyArray<{ texture: string; rate: number; depth: number; alpha: number; kind: 'play' | 'sky' | 'under' }> = [
+      { texture: 'skyline-sky', rate: .06, depth: -40, alpha: 1, kind: 'sky' },
+      { texture: 'malaysia-skyline', rate: .08, depth: -30, alpha: 1, kind: 'play' },
+      { texture: 'malaysia-midground', rate: .24, depth: -20, alpha: .88, kind: 'play' },
+      { texture: 'malaysia-foreground', rate: .46, depth: .5, alpha: .82, kind: 'play' },
+      { texture: 'dark-underground', rate: .35, depth: .4, alpha: 1, kind: 'under' },
+    ];
+    this.parallaxLayers = layerSpecs.map(spec => ({
+      texture: spec.texture,
+      images: [],
+      width: 2172 * baseScale,
+      scale: baseScale,
+      baseY: 0,
+      rate: spec.rate,
+      depth: spec.depth,
+      alpha: spec.alpha,
+      kind: spec.kind,
+      overlap: 0,
+    }));
+    this.abyssGfx = this.add.graphics().setScrollFactor(0).setDepth(.75);
+  }
 
-    const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
-    const viewportRight = Math.max(WORLD_WIDTH, this.scale.width);
-    const viewportBottom = Math.max(HEIGHT * 4, this.scale.height);
-    abyss.fillStyle(0x10201e, .72).fillRect(0, GROUND_Y + 8, viewportRight, 12);
-    abyss.fillStyle(0x0a1514, .86).fillRect(0, GROUND_Y + 20, viewportRight, 14);
-    abyss.fillStyle(0x050b0b, .96).fillRect(0, GROUND_Y + 34, viewportRight, viewportBottom - GROUND_Y - 34);
-    abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, GROUND_Y + 12, viewportRight, GROUND_Y + 12);
-    for (let x = 24; x < viewportRight; x += 68) {
+  // Places a layer's tiles across the viewport for the current camera scroll.
+  // The scroll is clamped to the world's left edge so a transient negative
+  // scroll (during camera setup) can never shift tile 0 right of screen x=0,
+  // which would expose the camera background at the left edge.
+  private positionLayer(layer: ParallaxLayer) {
+    if (!layer.images.length) return;
+    const step = layer.width - layer.overlap;
+    const sx = Math.max(0, this.cameras.main.scrollX);
+    const m = ((sx * layer.rate) % layer.width + layer.width) % layer.width;
+    const first = Math.round(-m);
+    layer.images.forEach((img, i) => { img.x = first + i * step; });
+  }
+
+  // Builds tiled images for every layer, centers the play band, and refits the abyss for the live canvas size.
+  private layoutParallax() {
+    const canvasW = this.scale.width;
+    const canvasH = this.scale.height;
+    this.bandOffset = Math.max(0, Math.floor((canvasH - HEIGHT) / 2));
+    this.cameras.main.setBounds(0, -this.bandOffset, WORLD_WIDTH, HEIGHT);
+
+    this.parallaxLayers.forEach(layer => {
+      const play = layer.kind === 'play';
+      const tileHeight = play
+        ? HEIGHT
+        : (layer.kind === 'sky' ? this.bandOffset : canvasH - (this.bandOffset + HEIGHT));
+      const scale = Math.max(tileHeight, 1) / 724;
+      const bandWidth = 2172 * scale;
+      const overlap = bandWidth >= 3 ? 2 : 0;
+      const step = Math.max(1, bandWidth - overlap);
+      const needed = play
+        ? Math.max(2, Math.ceil(canvasW / step) + 2)
+        : (tileHeight > 0 ? Math.ceil(canvasW / step) + 2 : 0);
+
+      layer.scale = scale;
+      layer.width = bandWidth;
+      layer.overlap = overlap;
+      layer.baseY = layer.kind === 'sky' ? 0 : this.bandOffset + (play ? 0 : HEIGHT);
+
+      layer.images.forEach(img => img.destroy());
+      layer.images = Array.from({ length: needed }, () =>
+        this.add.image(0, layer.baseY, layer.texture)
+          .setOrigin(0).setScrollFactor(0).setScale(scale).setDepth(layer.depth).setAlpha(layer.alpha));
+      this.positionLayer(layer);
+    });
+
+    this.redrawAbyss(canvasW);
+  }
+
+  private redrawAbyss(canvasW: number) {
+    const abyss = this.abyssGfx;
+    if (!abyss) return;
+    abyss.clear();
+    const top = this.bandOffset + GROUND_Y;
+    const bottom = this.bandOffset + HEIGHT;
+    const width = Math.max(canvasW, WORLD_WIDTH);
+    abyss.fillStyle(0x10201e, .72).fillRect(0, top + 8, width, 12);
+    abyss.fillStyle(0x0a1514, .86).fillRect(0, top + 20, width, 14);
+    abyss.fillStyle(0x050b0b, .96).fillRect(0, top + 34, width, Math.max(0, bottom - top - 34));
+    abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, top + 12, width, top + 12);
+    for (let x = 24; x < width; x += 68) {
       const depth = 12 + (x % 4) * 7;
-      abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, GROUND_Y + 17, x, GROUND_Y + 17 + depth);
-      abyss.fillStyle(0xd6a45d, .38).fillCircle(x, GROUND_Y + 19 + depth, 1.5);
+      abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, top + 17, x, top + 17 + depth);
+      abyss.fillStyle(0xd6a45d, .38).fillCircle(x, top + 19 + depth, 1.5);
     }
   }
 
@@ -236,7 +322,10 @@ class GameScene extends Phaser.Scene {
   private addHazards(x: number, y: number, count: number) {
     for (let i = 0; i < count; i++) {
       const spike = this.physics.add.staticImage(x + i * 19, y, 'spike').setOrigin(.5, 1).setDepth(3);
-      spike.body.setSize(14, 12).setOffset(3, 6);
+      const body = spike.body as Phaser.Physics.Arcade.StaticBody;
+      body.updateFromGameObject();
+      body.setOffset(1, 0);
+      body.setSize(18, 12, false);
       spike.setData('hazard', true);
       this.platforms.add(spike);
     }
@@ -366,12 +455,7 @@ class GameScene extends Phaser.Scene {
   }
 
   update(time: number, delta: number) {
-    const cameraX = this.cameras.main.scrollX;
-    this.parallaxLayers.forEach(layer => {
-      const offset = -(cameraX * layer.rate % layer.width);
-      layer.images[0].x = offset;
-      layer.images[1].x = offset + layer.width;
-    });
+    this.parallaxLayers.forEach(layer => this.positionLayer(layer));
     if (!this.gameStarted || this.gameEnded || this.paused) return;
     this.runElapsedMs += delta;
     const timerTick = Math.floor(this.runElapsedMs / 100);
@@ -704,6 +788,23 @@ const game = new Phaser.Game({
 
 if (import.meta.env.DEV) {
   (window as typeof window & { __echofall?: Phaser.Game }).__echofall = game;
+  setInterval(() => {
+    const scene = game.scene.getScene('game') as GameScene | null;
+    if (!scene) return;
+    const cam = scene.cameras.main;
+    console.log('[echofall-layout]', JSON.stringify({
+      canvasW: game.scale.width,
+      canvasH: game.scale.height,
+      bandOffset: scene.getBandOffset(),
+      camW: cam.width,
+      camH: cam.height,
+      camBounds: { x: cam.worldView.x, y: cam.worldView.y, w: cam.worldView.width, h: cam.worldView.height },
+      scrollX: cam.scrollX,
+      scrollY: cam.scrollY,
+      zoomX: cam.zoomX,
+      zoomY: cam.zoomY,
+    }));
+  }, 900);
 }
 
 document.querySelector('#start-button')!.addEventListener('click', () => (game.scene.getScene('game') as GameScene).startGame());
