@@ -2,23 +2,21 @@
 
 ## Product Summary
 
-**Echofall: Clockwork Run** is an original Malaysian-themed 2D platformer. The current MVP contains one 7,800-pixel level built around a seven-second Time Echo. The player records their movement, releases a translucent replay, and uses that replay to operate pressure plates while continuing through the level.
+**Echofall: Clockwork Run** is an original Malaysian-themed 2D platformer built around a seven-second Time Echo. The game now ships **four data-driven chapters** — Arrival Gate, Batu Caverns, Tea Terraces, and Merdeka Ascent — plus full touch/mobile support.
 
 Do not introduce a double jump. The intended movement uses a single jump, 110 ms of coyote time, and a 120 ms jump buffer.
 
 ## Stack
 
-- Phaser 3 with Arcade Physics
-- TypeScript
-- Vite
-- Vitest
-- Browser Web Audio API for procedural sound
-- Static hosting with no backend
+- Phaser 3 with Arcade Physics (`Phaser.Scale.FIT`, 960×540 design resolution)
+- TypeScript, Vite, Vitest
+- Browser Web Audio API for procedural sound (no audio files)
+- Static hosting with no backend; relative asset URLs for GitHub Pages
 
 ## Commands
 
 ```bash
-npm run dev      # local Vite server
+npm run dev      # local Vite server (allowedHosts enabled for previews)
 npm test         # isolated logic and level-layout tests
 npm run build    # TypeScript check and production bundle
 npm run preview  # serve the production build locally
@@ -26,116 +24,109 @@ npm run preview  # serve the production build locally
 
 ## Controls
 
-| Action | Input |
-| --- | --- |
-| Move | `A`/`D` or Left/Right |
-| Jump | `Space`, `W`, or Up |
-| Start/release recording | `E` |
-| Pause | `Escape` |
-| Restart | `R` |
-| Mute/unmute | HUD button |
+| Action | Keyboard | Touch |
+| --- | --- | --- |
+| Move | `A`/`D` or Left/Right | ◀ / ▶ pads (bottom-left) |
+| Jump | `Space`, `W`, or Up | JUMP button (bottom-right) |
+| Record/release echo | `E` | ECHO button |
+| Pause | `Escape` | `II` button in the topbar |
+| Restart | `R` | Pause overlay → RESTART CHAPTER |
+| Fullscreen | — | `⛶` button (where supported) |
+
+Touch controls appear automatically when `pointer: coarse` or `ontouchstart` is detected (`.touch-ui` class on `<body>`). The virtual buttons are DOM elements using pointer events with capture; multi-touch (move + jump) works.
 
 ## Core Mechanics
 
 ### Movement
 
-The player accelerates horizontally, has ground friction, a maximum horizontal speed of 300, and a single variable-height jump. Releasing jump early reduces upward velocity. There is no double jump.
+Horizontal acceleration, ground friction, max speed 300, single variable-height jump (releasing early cuts velocity). Coyote time 110 ms, jump buffer 120 ms. No double jump.
 
 ### Time Echo
 
-- Pressing `E` begins recording position and facing direction.
-- The recording lasts up to `7,000 ms`; pressing `E` again releases it early.
-- Playback creates one translucent copy following the recorded path.
-- Starting another recording replaces the previous echo.
-- Both the player and active echo can trigger brass pressure plates.
-- Recording/playback implementation: `src/main.ts`.
-- Frame interpolation: `src/echo.ts`.
+- `E`/ECHO starts recording position and facing for up to `7,000 ms`; pressing again releases it early.
+- The replay is one translucent sprite following the recorded path (`src/echo.ts` interpolates).
+- Player and echo both press plates. Starting a new recording replaces the echo.
+- **Echo-only resonators** toggle when the echo passes through them; the player passes through freely.
+- Smart enemies (flyer, charger, warden, spitter) target the nearest of player/echo — the echo is a decoy.
+- Spitter projectiles are absorbed by the echo.
 
-For a stationary echo, begin recording while standing on a plate, remain there for the desired hold time, and release the recording. The replay will repeat that stationary position for the recorded duration.
+### Puzzle devices (`DeviceSpec` in `src/level.ts`)
 
-### Gates and Echo Encounters
+- `hold` — gates open while plate(s) are pressed; optional `requireAll` + `latch` + `closeDelayMs` (dual-lock vault).
+- `timed` — pressing the plate opens shutters for `openMs`; barrier blinks when about to close.
+- `relay` — each touch charges a plate for `holdMs`; gate opens only while ALL plates are charged at once. Charge bars show decay.
+- `sequence` — plates must be touched in `order`; numbered lamps show 1·2·3; a wrong press resets (with a buzz).
+- `echoSwitch` — echo-only crystal resonators; each echo crossing toggles; its gate opens while all crystals are on.
+- `guard` — gate stays shut until the linked warden enemy is felled (3 stomps).
+- `lift` — plate-powered platform patrolling between `from`/`to` on `axis: 'x'|'y'`.
 
-1. **Echo door:** plate at `x=1400`, gate at `x=2050`. A single plate temporarily opens the gate.
-2. **Powered lift:** plate at `x=2700`; the lift travels between `x=3020` and `x=3370` while powered.
-3. **Shutter run:** plate at `x=4280`; it temporarily opens gates at `x=4560`, `4820`, and `5080` together.
-4. **Dual-lock vault:** plates at `x=5520` and `x=6460`, gate at `x=6800`. Both plates must be active simultaneously once. After successful activation, this final gate permanently latches open so the player can leave the second plate and proceed.
+Pure device rules live in `src/devices.ts` and are unit-tested.
 
-Gate barriers are full-height and have ceiling caps. Keep ordinary platforms at least `120px` away from gate centers; `src/level.test.ts` checks this clearance.
+### Obstacles
 
-### Enemies and Hazards
+Spikes; **crushers** (period-slamming columns; solid to ride, deadly when crushed); **pendulums** (swinging spike balls, damage overlap); **crumble platforms** (shake 460 ms, fall, respawn after 2.8 s); **bouncers** (spring mushrooms, −760 vy); **movers** (patrolling platforms); **wind zones** (horizontal force added to player acceleration, drifting leaf particles).
 
-- Crawlers patrol horizontally and reverse against solid geometry.
-- Landing on a crawler while descending kills it and bounces the player upward.
-- Side contact damages the player.
-- Spikes damage the player.
-- Damage returns the player to the most recent checkpoint and grants a short invulnerability window.
+### Enemies (`EnemySpec` in `src/level.ts`)
+
+- `crawler` — patrols, reverses on walls/bounds, stompable.
+- `flyer` — hovers, swoops at the nearest target, returns to anchor, stompable.
+- `spitter` — stationary pitcher-plant turret, fires projectiles (popped by platforms/echo), stompable.
+- `charger` — patrols, windup, charges at the nearest same-level target, dizzy after impact, stompable.
+- `warden` — 3-HP armoured mini-boss; chases nearest target; stomps knock it staggered; third stomp fells it and opens its guard gate.
+
+Landing on any enemy while descending kills it (warden: damages it) and bounces the player upward. Side contact damages the player. Damage returns the player to the most recent checkpoint with a short invulnerability window.
 
 ### Progression
 
-- Four checkpoints update the respawn position.
-- Eighteen optional memory shards are distributed through the level.
-- The HUD tracks shards, elapsed time, echo state, checkpoint state, and audio state.
-- Reaching the vault at `x=7650` completes the run.
-- Completion rank depends on time and shard count.
-- Best time is stored in `localStorage`.
+- Chapters unlock in order; per-chapter best time and shards persist in `localStorage` (`echofall-progress-v2`, see `src/progress.ts`).
+- Ranks scale with each level's shard total and par time (`completionRank`).
+- Checkpoints (ground-level only) update the respawn position. Reaching the vault completes the chapter.
+- Chapter select lives on the start overlay; pause and result overlays offer resume/restart/chapter actions.
 
 ## Level Data
 
-Static geometry and item placement live in `src/level.ts` under `LEVEL_BLUEPRINT`:
+All geometry and placement live in `src/levels.ts` as `LEVELS: LevelBlueprint[]`:
 
-- `floorSegments`: ground spans
-- `platforms`: elevated platform center, height, and width
-- `hazards`: spike start position and count
-- `enemies`: crawler spawn coordinates
-- `shards`: collectible coordinates
-- `checkpoints`: checkpoint x-coordinates
-- `gateXs`: gate centers used by clearance tests
-- `goalX`: final vault position
+- `floorSegments` `[centerX, width]`, `platforms` `[centerX, centerY, width]` (ground centre y = 486, top edge 468)
+- `crumbles`, `movers`, `bouncers`, `windZones`, `crushers`, `pendulums` for obstacles
+- `hazards` `[x, spikeCount]`, `enemies`, `shards`, `checkpoints`
+- `devices` (see above), `hints` (`atX` triggered tutorial messages), `goalX`, `gateXs`
+- `palette` (sky/tint/platform/stroke/moss/abyss colours per chapter) and `parMs`
 
-The Phaser world uses a design height of `540px`, ground center at `y=486`, and world width of `7,800px`. Platform coordinates are center-based.
+A single jump clears ~100 px of height and ~230 px of flat gap; keep deliberate gaps within those limits unless a device is the intended crossing. Gate barriers are full-height; ordinary platforms must stay at least `120 px` from gate centres — `src/level.test.ts` enforces clearance, world bounds, device-gate listing, and enemy-gate spacing for every level.
 
 ## Visual System
 
-The Malaysian environment uses three supplied PNG layers:
+The Malaysian environment uses three supplied PNG layers (`public/assets/malaysia-*.png`). `drawWorld()` creates paired copies of every image and wraps them manually — do not replace with `TileSprite` (non-power-of-two seams). Parallax rates: `0.08`, `0.24`, `0.46`. Each chapter tints the layers via `palette.tint` and re-colours geometry via `palette`.
 
-- `public/assets/malaysia-skyline.png`: distant Kuala Lumpur skyline
-- `public/assets/malaysia-midground.png`: architecture and clockwork city
-- `public/assets/malaysia-foreground.png`: tropical foliage and machinery
-
-`drawWorld()` creates paired copies of every image and wraps them manually. Do not replace these with Phaser `TileSprite`: the non-power-of-two source dimensions produced blank seams during testing. The three camera rates are `0.08`, `0.24`, and `0.46`.
-
-The dark abyss beneath the ground is camera-fixed and intentionally oversized to cover wide and tall responsive canvases. It must not be added to the parallax update loop.
-
-The courier source is `public/assets/kite-sprite-source.png`. `buildCourierAtlas()` uses hand-authored source regions because the generated sheet does not have a uniform grid. Preserve the player scale of `0.42` and the single-frame idle pose unless replacement artwork is deliberately re-authored.
+The courier source is `public/assets/kite-sprite-source.png`. `buildCourierAtlas()` uses hand-authored source regions; keep the player scale of `0.42` unless replacing artwork deliberately.
 
 ## Audio
 
-`src/audio.ts` synthesizes all audio at runtime. It provides ambience plus cues for steps, jump, landing, shards, stomps, damage, recording, echo release, plates, gates, checkpoints, and victory. No external audio files are required.
-
-Phaser audio is disabled intentionally. `AudioDirector.start()` creates/resumes Web Audio only after a user gesture. Preserve that behavior to avoid autoplay failures.
+`src/audio.ts` synthesizes all audio at runtime after the first user gesture (autoplay-safe). Cues cover movement, echo, plates, gates, checkpoints, victory, plus new ones: bounce, crumble, toggle, chime (resonator), shoot, pop, slam (crusher/warden), good/bad (sequence), unlock. Phaser audio stays disabled (`audio: { noAudio: true }`).
 
 ## Code Map
 
-- `src/main.ts`: scene lifecycle, rendering, player controls, collisions, echo devices, checkpoints, victory, and DOM integration
-- `src/level.ts`: level geometry and gate-clearance validation
-- `src/echo.ts`: pure echo-frame interpolation
-- `src/progress.ts`: time formatting, ranks, and best-time parsing
-- `src/audio.ts`: procedural audio engine
-- `src/style.css`: responsive application shell and overlays
-- `index.html`: HUD, start/pause/result overlays, and controls legend
+- `src/main.ts` — scene: level builder, devices, enemies, obstacles, echo, input (keyboard + touch state), flow, DOM wiring
+- `src/levels.ts` — the four chapter blueprints
+- `src/level.ts` — level types, gate-clearance validation, static checks
+- `src/devices.ts` — pure device rules (hold/timed/relay/sequence/echo-switch)
+- `src/echo.ts` — pure echo-frame interpolation
+- `src/progress.ts` — time formatting, ranks, progress persistence
+- `src/audio.ts` — procedural audio engine
+- `src/style.css` — responsive shell, overlays, touch controls, safe-area handling
+- `index.html` — HUD, chapter select, start/pause/result overlays, touch controls, rotate hint
 
 ## Deployment
 
-`vite.config.ts` sets `base: './'`, and Phaser assets use relative `assets/...` URLs. This allows the contents of `dist/` to run from a GitHub Pages repository subpath.
-
-A deployment workflow has not been added yet. Before publishing, add a GitHub Actions Pages workflow that runs `npm ci` and `npm run build`, then uploads `dist/` as the Pages artifact.
+`vite.config.ts` sets `base: './'`, `server.allowedHosts: true` (preview proxies), and `es2022`. `.github/workflows/deploy.yml` builds and publishes `dist/` to GitHub Pages on pushes to `main`.
 
 ## Change Checklist
 
 1. Keep the no-double-jump rule and seven-second echo unless the product requirement changes.
-2. Update `LEVEL_BLUEPRINT` instead of scattering new platform coordinates through scene code.
-3. Add every new gate center to `gateXs` so clearance tests cover it.
-4. Preserve relative asset URLs for GitHub Pages.
-5. Check wide and mobile viewports after rendering changes.
-6. Run `npm test` and `npm run build` before handoff.
-7. Manually verify the affected encounter in a browser; canvas gameplay is not covered by DOM-only tests.
+2. Add new content to `LEVELS` in `src/levels.ts` — never scatter coordinates through scene code.
+3. List every device gate in the level's `gateXs`; clearance and sanity tests fail otherwise.
+4. Keep checkpoints on ground-level spans (respawn assumes ground top y = 468).
+5. Preserve relative asset URLs for GitHub Pages.
+6. Check wide, narrow, and mobile (coarse-pointer) viewports after rendering changes.
+7. Run `npm test` and `npm run build` before handoff; manually verify affected encounters in a browser.

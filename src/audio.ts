@@ -10,7 +10,17 @@ export type SoundCue =
   | 'plate'
   | 'gate'
   | 'checkpoint'
-  | 'win';
+  | 'win'
+  | 'bounce'
+  | 'crumble'
+  | 'toggle'
+  | 'chime'
+  | 'shoot'
+  | 'pop'
+  | 'slam'
+  | 'good'
+  | 'bad'
+  | 'unlock';
 
 export class AudioDirector {
   private context?: AudioContext;
@@ -74,6 +84,42 @@ export class AudioDirector {
         break;
       case 'win':
         [330, 440, 554, 660].forEach((frequency, index) => this.tone(frequency, .45, 'triangle', .08, frequency * 1.02, index * .13));
+        break;
+      case 'bounce':
+        this.tone(180, .14, 'square', .08, 560);
+        this.tone(360, .1, 'triangle', .05, 720, .03);
+        break;
+      case 'crumble':
+        this.noise(.22, .09, 320);
+        this.tone(110, .24, 'sawtooth', .04, 55);
+        break;
+      case 'toggle':
+        this.tone(520, .05, 'square', .06, 520);
+        this.tone(390, .07, 'square', .05, 390, .05);
+        break;
+      case 'chime':
+        this.tone(880, .22, 'sine', .08, 1320);
+        this.tone(1320, .3, 'sine', .04, 1760, .06);
+        break;
+      case 'shoot': this.tone(620, .09, 'sawtooth', .05, 180); break;
+      case 'pop':
+        this.tone(300, .08, 'square', .06, 620);
+        this.noise(.05, .04, 1400);
+        break;
+      case 'slam':
+        this.noise(.12, .11, 240);
+        this.tone(70, .2, 'sawtooth', .07, 45);
+        break;
+      case 'good':
+        this.tone(523, .1, 'triangle', .07, 523);
+        this.tone(659, .12, 'triangle', .06, 659, .07);
+        break;
+      case 'bad':
+        this.tone(220, .16, 'sawtooth', .06, 130);
+        this.tone(160, .2, 'square', .04, 100, .05);
+        break;
+      case 'unlock':
+        [392, 523, 659, 784].forEach((frequency, index) => this.tone(frequency, .3, 'triangle', .06, frequency, index * .08));
         break;
     }
   }

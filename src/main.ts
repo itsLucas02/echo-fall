@@ -1,22 +1,84 @@
 import Phaser from 'phaser';
 import './style.css';
 import { sampleEchoFrame, type EchoFrame } from './echo';
-import { completionRank, formatRunTime } from './progress';
+import { completionRank, formatRunTime, loadProgress, recordCompletion, saveProgress, type PlayerProgress } from './progress';
+import {
+  advanceSequence,
+  echoSwitchGateOpen,
+  emptyRelayState,
+  holdGateOpen,
+  relayCharge,
+  relayGateOpen,
+  sequenceLampLabel,
+  touchRelayPlate,
+  type HoldMode,
+} from './devices';
 import { AudioDirector } from './audio';
-import { LEVEL_BLUEPRINT } from './level';
-
-type BarrierBody = { body: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
-type Gate = { bodies: BarrierBody[]; plates: Phaser.GameObjects.Rectangle[]; requireAll: boolean; latchesOpen: boolean; open: boolean; closeDelayMs?: number; closeTimer?: Phaser.Time.TimerEvent };
-type LiftDevice = { platform: Phaser.GameObjects.Rectangle; plate: Phaser.GameObjects.Rectangle; startX: number; endX: number; direction: number; powered: boolean };
-type ParallaxLayer = { images: Phaser.GameObjects.Image[]; width: number; rate: number };
+import { LEVELS } from './levels';
 
 const WIDTH = 960;
 const HEIGHT = 540;
-const WORLD_WIDTH = LEVEL_BLUEPRINT.worldWidth;
 const GROUND_Y = 486;
-const TOTAL_SHARDS = 18;
 const ECHO_DURATION_MS = 7000;
 const audio = new AudioDirector();
+
+type BarrierBody = { rect: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
+interface GateCore { bodies: BarrierBody[]; open: boolean }
+interface HoldGate extends GateCore {
+  plates: Phaser.GameObjects.Rectangle[];
+  requireAll: boolean;
+  latch: boolean;
+  closeDelayMs?: number;
+  closeTimer?: Phaser.Time.TimerEvent;
+}
+interface TimedGate extends GateCore { plate: Phaser.GameObjects.Rectangle; openMs: number; expiry: number }
+interface RelayGate extends GateCore {
+  plates: Phaser.GameObjects.Rectangle[];
+  bars: Phaser.GameObjects.Rectangle[];
+  holdMs: number;
+  state: number[];
+}
+interface SequenceGate extends GateCore {
+  plates: Phaser.GameObjects.Rectangle[];
+  lamps: Phaser.GameObjects.Rectangle[];
+  labels: Phaser.GameObjects.Text[];
+  order: number[];
+  progress: number;
+  prev: boolean[];
+}
+interface EchoGate extends GateCore {
+  pads: Phaser.GameObjects.Rectangle[];
+  crystals: Phaser.GameObjects.Image[];
+  states: boolean[];
+  prev: boolean[];
+}
+interface GuardGate extends GateCore { enemyIndex: number }
+interface LiftDevice {
+  platform: Phaser.GameObjects.Rectangle;
+  plate: Phaser.GameObjects.Rectangle;
+  axis: 'x' | 'y';
+  baseX: number;
+  baseY: number;
+  from: number;
+  to: number;
+  speed: number;
+  dir: number;
+  powered: boolean;
+}
+interface MoverDevice { platform: Phaser.GameObjects.Rectangle; x0: number; span: number; speed: number; dir: number }
+interface CrumbleDevice { rect: Phaser.GameObjects.Rectangle; state: 'idle' | 'shake' | 'gone'; until: number; baseX: number }
+interface CrusherDevice {
+  head: Phaser.GameObjects.Rectangle;
+  column: Phaser.GameObjects.Rectangle;
+  teeth: Phaser.GameObjects.Rectangle;
+  x: number; hangY: number; slamY: number; period: number; phase: number;
+}
+interface PendulumDevice {
+  bob: Phaser.GameObjects.Image; chain: Phaser.GameObjects.Graphics;
+  x: number; pivotY: number; length: number; period: number; phase: number; amplitude: number;
+}
+interface WindDevice { zone: Phaser.Geom.Rectangle; fx: number }
+interface ParallaxLayer { images: Phaser.GameObjects.Image[]; width: number; rate: number }
 
 const ui = {
   start: document.querySelector<HTMLElement>('#start-screen')!,
@@ -30,42 +92,77 @@ const ui = {
   timer: document.querySelector<HTMLElement>('#run-time')!,
   echo: document.querySelector<HTMLElement>('#echo-state')!,
   checkpoint: document.querySelector<HTMLElement>('#checkpoint-state')!,
+  level: document.querySelector<HTMLElement>('#level-label')!,
+  banner: document.querySelector<HTMLElement>('#level-banner')!,
+  bannerName: document.querySelector<HTMLElement>('#level-banner-name')!,
+  bannerSub: document.querySelector<HTMLElement>('#level-banner-sub')!,
   sound: document.querySelector<HTMLButtonElement>('#sound-toggle')!,
+  chips: document.querySelector<HTMLElement>('#level-chips')!,
+  begin: document.querySelector<HTMLButtonElement>('#start-button')!,
+  next: document.querySelector<HTMLButtonElement>('#next-button')!,
 };
 
+/** Shared touch state; the scene reads it alongside the keyboard every frame. */
+const touch = { left: false, right: false, jumpHeld: false };
+
 class GameScene extends Phaser.Scene {
+  private levelIndex = 0;
+  private progress: PlayerProgress = loadProgress(LEVELS.map(l => l.id));
   private parallaxLayers: ParallaxLayer[] = [];
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
-  private enemies!: Phaser.Physics.Arcade.Group;
+  private groundEnemies!: Phaser.Physics.Arcade.Group;
+  private airEnemies!: Phaser.Physics.Arcade.Group;
+  private projectiles!: Phaser.Physics.Arcade.Group;
   private shards!: Phaser.Physics.Arcade.StaticGroup;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
-  private gates: Gate[] = [];
-  private lift?: LiftDevice;
+
+  private holdGates: HoldGate[] = [];
+  private timedGates: TimedGate[] = [];
+  private relayGates: RelayGate[] = [];
+  private sequenceGates: SequenceGate[] = [];
+  private echoGates: EchoGate[] = [];
+  private guardGates: GuardGate[] = [];
+  private lifts: LiftDevice[] = [];
+  private movers: MoverDevice[] = [];
+  private crumbles: CrumbleDevice[] = [];
+  private crushers: CrusherDevice[] = [];
+  private pendulums: PendulumDevice[] = [];
+  private winds: WindDevice[] = [];
+  private hints: { atX: number; text: string }[] = [];
+
   private echo?: Phaser.GameObjects.Sprite;
   private echoFrames: EchoFrame[] = [];
   private recording = false;
   private recordStarted = 0;
   private playbackStarted = 0;
   private playingEcho = false;
+  private echoGfx!: Phaser.GameObjects.Graphics;
+
+  private dust!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private sparkle!: Phaser.GameObjects.Particles.ParticleEmitter;
+
+  private totalShards = 0;
   private shardsFound = 0;
   private checkpointX = 140;
   private invulnerableUntil = 0;
   private gameStarted = false;
   private gameEnded = false;
   private paused = false;
-  private messageTimer?: Phaser.Time.TimerEvent;
-  private lastHint = '';
   private hasEverStarted = false;
+  private messageTimer?: Phaser.Time.TimerEvent;
   private runElapsedMs = 0;
   private lastTimerTick = -1;
   private lastGroundedAt = Number.NEGATIVE_INFINITY;
   private jumpQueuedAt = Number.NEGATIVE_INFINITY;
+  private jumpActive = false;
   private wasGrounded = false;
   private lastStepAt = 0;
 
   constructor() { super('game'); }
+
+  private get level() { return LEVELS[this.levelIndex]; }
 
   preload() {
     this.load.image('courier-source', 'assets/kite-sprite-source.png');
@@ -75,12 +172,24 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
-    this.gates = [];
-    this.lift = undefined;
+    this.holdGates = [];
+    this.timedGates = [];
+    this.relayGates = [];
+    this.sequenceGates = [];
+    this.echoGates = [];
+    this.guardGates = [];
+    this.lifts = [];
+    this.movers = [];
+    this.crumbles = [];
+    this.crushers = [];
+    this.pendulums = [];
+    this.winds = [];
+    this.hints = [...(this.level.hints ?? [])];
     this.echo = undefined;
     this.echoFrames = [];
     this.recording = false;
     this.playingEcho = false;
+    this.totalShards = this.level.shards.length;
     this.shardsFound = 0;
     this.checkpointX = 140;
     this.invulnerableUntil = 0;
@@ -92,47 +201,122 @@ class GameScene extends Phaser.Scene {
     this.lastTimerTick = -1;
     this.lastGroundedAt = Number.NEGATIVE_INFINITY;
     this.jumpQueuedAt = Number.NEGATIVE_INFINITY;
+    this.jumpActive = false;
     this.wasGrounded = false;
     this.lastStepAt = 0;
     this.physics.world.isPaused = false;
     this.physics.world.setBoundsCollision(true, true, true, false);
-    ui.shard.textContent = `0 / ${TOTAL_SHARDS}`;
+    this.physics.world.setBounds(0, 0, this.level.worldWidth, HEIGHT);
+    this.cameras.main.setBounds(0, 0, this.level.worldWidth, HEIGHT);
+    ui.message.classList.remove('visible');
+    ui.shard.textContent = `0 / ${this.totalShards}`;
     ui.timer.textContent = '00:00.0';
     ui.echo.textContent = 'READY';
     ui.checkpoint.textContent = 'OFFLINE';
-    this.physics.world.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
-    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, HEIGHT);
+    ui.level.textContent = `${this.levelIndex + 1} · ${this.level.name.toUpperCase()}`;
+    touch.left = false;
+    touch.right = false;
+    touch.jumpHeld = false;
     this.makeTextures();
     this.buildCourierAtlas();
+    this.createPlayer();
     this.drawWorld();
     this.buildLevel();
-    this.createPlayer();
     this.createEnemies();
     this.createShards();
     this.createCheckpointAndGoal();
+    this.createParticles();
     this.bindInput();
     this.bindPhysics();
+    this.echoGfx = this.add.graphics().setDepth(9);
     this.cameras.main.startFollow(this.player, true, 0.085, 0.085, -120, 50);
     this.cameras.main.setDeadzone(210, 90);
-    this.showMessage('Reach the time vault. The city is waiting.', 3200);
+    this.showLevelBanner();
     if (!this.hasEverStarted) this.scene.pause();
   }
+
+  private lastHint = '';
+
+  // ─────────────────────────────────────────────────────────────
+  // Textures
+  // ─────────────────────────────────────────────────────────────
 
   private makeTextures() {
     if (this.textures.exists('crawler')) return;
     const g = this.add.graphics();
+
+    // crawler — the classic patroller
     g.fillStyle(0x263632).fillRoundedRect(1, 4, 30, 22, 5);
     g.fillStyle(0xbc6655).fillRect(4, 0, 24, 8);
     g.fillStyle(0xe6d7b7).fillRect(7, 11, 5, 4).fillRect(20, 11, 5, 4);
     g.fillStyle(0x17211f).fillRect(6, 26, 7, 5).fillRect(20, 26, 7, 5);
     g.generateTexture('crawler', 32, 31).clear();
 
+    // flyer — paper-kite drone
+    g.fillStyle(0x7c9a90).fillTriangle(15, 8, 0, 2, 4, 12);
+    g.fillStyle(0x7c9a90).fillTriangle(15, 8, 30, 2, 26, 12);
+    g.fillStyle(0x44564f).fillEllipse(15, 12, 10, 14);
+    g.fillStyle(0xe0a85a).fillCircle(15, 9, 2);
+    g.fillStyle(0x2c3a36).fillTriangle(15, 19, 11, 23, 19, 23);
+    g.generateTexture('flyer', 30, 24).clear();
+
+    // spitter — pitcher-plant turret
+    g.fillStyle(0x5d4433).fillRoundedRect(6, 12, 18, 20, 4);
+    g.fillStyle(0x8a6a4a).fillEllipse(15, 12, 22, 10);
+    g.fillStyle(0x9fd08a).fillEllipse(15, 11, 14, 5);
+    g.fillStyle(0x2f241c).fillRect(13, 0, 4, 8);
+    g.fillStyle(0xc9a06a).fillCircle(15, 2, 3);
+    g.generateTexture('spitter', 30, 34).clear();
+
+    // charger — boiler boar
+    g.fillStyle(0x6a4a3c).fillRoundedRect(2, 6, 36, 16, 6);
+    g.fillStyle(0x8a5f4a).fillRect(28, 8, 10, 10);
+    g.fillStyle(0xe6d7b7).fillTriangle(34, 16, 39, 12, 36, 20);
+    g.fillStyle(0xe0a85a).fillRect(30, 10, 4, 3);
+    g.fillStyle(0x17211f).fillCircle(10, 24, 4).fillCircle(24, 24, 4);
+    g.fillStyle(0x4a352b).fillRect(6, 4, 20, 4);
+    g.generateTexture('charger', 40, 28).clear();
+
+    // warden — armoured mini-boss
+    g.fillStyle(0x3c4a46).fillRoundedRect(2, 6, 44, 24, 6);
+    g.fillStyle(0x586a64).fillRect(6, 9, 12, 18).fillRect(20, 9, 12, 18).fillRect(34, 9, 8, 18);
+    g.fillStyle(0xbc6655).fillTriangle(2, 8, -0, 0, 10, 6);
+    g.fillStyle(0xe0a85a).fillRect(38, 12, 6, 4);
+    g.fillStyle(0x17211f).fillRect(6, 30, 10, 5).fillRect(30, 30, 10, 5);
+    g.lineStyle(2, 0x9fb4a8, .8).strokeRoundedRect(2, 6, 44, 24, 6);
+    g.generateTexture('warden', 48, 36).clear();
+
     g.lineStyle(3, 0xe0a85a).strokeCircle(10, 10, 7);
     g.fillStyle(0xf1d7a9).fillCircle(10, 10, 3);
     g.generateTexture('shard', 20, 20).clear();
 
     g.fillStyle(0xd16151).fillTriangle(0, 18, 10, 0, 20, 18);
-    g.generateTexture('spike', 20, 18).destroy();
+    g.generateTexture('spike', 20, 18).clear();
+
+    // bouncer — spring mushroom
+    g.fillStyle(0x8a6a4a).fillRect(24, 12, 8, 13);
+    g.fillStyle(0xc7503e).fillRoundedRect(3, 1, 50, 15, 8);
+    g.fillStyle(0xf1d7a9).fillCircle(16, 8, 3).fillCircle(36, 7, 2.5).fillCircle(27, 11, 2);
+    g.generateTexture('bouncer', 56, 26).clear();
+
+    // resonator — echo crystal
+    g.fillStyle(0x7fd8c8).fillPoints([{ x: 13, y: 0 }, { x: 26, y: 20 }, { x: 13, y: 40 }, { x: 0, y: 20 }], true);
+    g.fillStyle(0xd8fff4).fillPoints([{ x: 13, y: 8 }, { x: 19, y: 20 }, { x: 13, y: 32 }, { x: 7, y: 20 }], true);
+    g.generateTexture('resonator', 26, 40).clear();
+
+    // spitter projectile
+    g.fillStyle(0x6f9a4a).fillCircle(5, 5, 5);
+    g.fillStyle(0xb8e08a).fillCircle(5, 5, 2.5);
+    g.generateTexture('orb', 10, 10).clear();
+
+    // pendulum bob
+    g.fillStyle(0x3a4a46).fillCircle(12, 12, 9);
+    g.lineStyle(2, 0xb68247).strokeCircle(12, 12, 9);
+    g.fillStyle(0xb68247).fillTriangle(12, 0, 8, 5, 16, 5).fillTriangle(12, 24, 8, 19, 16, 19);
+    g.generateTexture('bob', 24, 24).clear();
+
+    g.fillStyle(0xffffff).fillCircle(2, 2, 2);
+    g.generateTexture('p-dot', 4, 4).destroy();
   }
 
   private buildCourierAtlas() {
@@ -184,13 +368,19 @@ class GameScene extends Phaser.Scene {
     animation('courier-victory', 31, 38, 8);
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // World
+  // ─────────────────────────────────────────────────────────────
+
   private drawWorld() {
-    this.cameras.main.setBackgroundColor('#7ca99c');
+    const palette = this.level.palette;
+    this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
     const imageScale = HEIGHT / 724;
     const layerWidth = 2172 * imageScale;
     const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
       const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
         .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
+      if (palette.tint !== 0xffffff) images.forEach(image => image.setTint(palette.tint));
       this.parallaxLayers.push({ images, width: layerWidth, rate });
     };
     this.parallaxLayers = [];
@@ -199,10 +389,10 @@ class GameScene extends Phaser.Scene {
     addLayer('malaysia-foreground', .46, .5, .82);
 
     const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
-    const viewportRight = Math.max(WORLD_WIDTH, this.scale.width);
+    const viewportRight = Math.max(WIDTH, this.scale.width);
     const viewportBottom = Math.max(HEIGHT * 4, this.scale.height);
-    abyss.fillStyle(0x10201e, .72).fillRect(0, GROUND_Y + 8, viewportRight, 12);
-    abyss.fillStyle(0x0a1514, .86).fillRect(0, GROUND_Y + 20, viewportRight, 14);
+    abyss.fillStyle(palette.abyss, .72).fillRect(0, GROUND_Y + 8, viewportRight, 12);
+    abyss.fillStyle(palette.abyss, .86).fillRect(0, GROUND_Y + 20, viewportRight, 14);
     abyss.fillStyle(0x050b0b, .96).fillRect(0, GROUND_Y + 34, viewportRight, viewportBottom - GROUND_Y - 34);
     abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, GROUND_Y + 12, viewportRight, GROUND_Y + 12);
     for (let x = 24; x < viewportRight; x += 68) {
@@ -213,24 +403,38 @@ class GameScene extends Phaser.Scene {
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
-    const block = this.add.rectangle(x, y, width, height, 0x344b44).setStrokeStyle(2, 0x688078).setDepth(1);
+    const palette = this.level.palette;
+    const block = this.add.rectangle(x, y, width, height, palette.platform).setStrokeStyle(2, palette.stroke).setDepth(1);
     this.physics.add.existing(block, true);
     this.platforms.add(block);
-    const moss = this.add.rectangle(x, y - height / 2 + 3, width - 4, 5, 0x77956c).setDepth(2);
+    const moss = this.add.rectangle(x, y - height / 2 + 3, width - 4, 5, palette.moss).setDepth(2);
     moss.setAlpha(.85);
     return block;
   }
 
   private buildLevel() {
+    const level = this.level;
     this.platforms = this.physics.add.staticGroup();
-    LEVEL_BLUEPRINT.floorSegments.forEach(([x, width]) => this.addPlatform(x, GROUND_Y, width, 36));
-    LEVEL_BLUEPRINT.platforms.forEach(([x, y, width]) => this.addPlatform(x, y, width));
-    LEVEL_BLUEPRINT.hazards.forEach(([x, count]) => this.addHazards(x, 475, count));
-
-    this.addGate(1400, 2050);
-    this.addPoweredLift(2700, 3020, 3370);
-    this.addShutterRun(4280, [4560, 4820, 5080]);
-    this.addDualGate([5520, 6460], 6800);
+    level.floorSegments.forEach(([x, width]) => this.addPlatform(x, GROUND_Y, width, 36));
+    level.platforms.forEach(([x, y, width]) => this.addPlatform(x, y, width));
+    level.hazards.forEach(([x, count]) => this.addHazards(x, 475, count));
+    (level.crumbles ?? []).forEach(([x, y, width]) => this.addCrumble(x, y, width));
+    (level.movers ?? []).forEach(mover => this.addMover(mover.x, mover.y, mover.width, mover.dx, mover.speed ?? 80));
+    (level.bouncers ?? []).forEach(([x, y]) => this.addBouncer(x, y));
+    (level.windZones ?? []).forEach(wind => this.addWind(wind.x, wind.width, wind.fx));
+    (level.crushers ?? []).forEach(crusher => this.addCrusher(crusher.x, crusher.hangY, crusher.slamY, crusher.period, crusher.phase ?? 0));
+    (level.pendulums ?? []).forEach(p => this.addPendulum(p.x, p.pivotY, p.length, p.period, p.phase ?? 0, p.amplitude ?? .55));
+    level.devices.forEach(device => {
+      switch (device.kind) {
+        case 'hold': this.addHoldGate(device.plateXs, device.gateXs, device.requireAll ?? false, device.latch ?? false, device.closeDelayMs); break;
+        case 'timed': this.addTimedGate(device.plateX, device.gateXs, device.openMs); break;
+        case 'relay': this.addRelayGate(device.plateXs, device.gateX, device.holdMs); break;
+        case 'sequence': this.addSequenceGate(device.plateXs, device.gateX, device.order); break;
+        case 'echoSwitch': this.addEchoGate(device.switchXs, device.gateX); break;
+        case 'guard': this.addGuardGate(device.enemyIndex, device.gateX); break;
+        case 'lift': this.addLift(device.plateX, device.x, device.from, device.to, device.axis, device.speed ?? 130); break;
+      }
+    });
   }
 
   private addHazards(x: number, y: number, count: number) {
@@ -242,52 +446,195 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  private addPlate(x: number) {
-    return this.add.rectangle(x, 465, 68, 10, 0xb68247).setStrokeStyle(2, 0xe4c288).setDepth(3);
+  private addCrumble(x: number, y: number, width: number) {
+    const rect = this.add.rectangle(x, y, width, 14, 0x5a4a3a).setStrokeStyle(2, 0x9a7a5a).setDepth(1);
+    this.physics.add.existing(rect, true);
+    this.platforms.add(rect);
+    rect.setData('crumble', true);
+    this.crumbles.push({ rect, state: 'idle', until: 0, baseX: x });
   }
 
-  private addBarrierBody(x: number) {
-    const height = 388;
-    const closedY = 274;
-    const body = this.add.rectangle(x, closedY, 30, height, 0x263b36).setStrokeStyle(3, 0xb68247).setDepth(4);
-    this.physics.add.existing(body, true);
-    this.platforms.add(body);
-    this.add.rectangle(x, 74, 100, 18, 0x314840).setStrokeStyle(2, 0xb68247).setDepth(4);
-    return { body, closedY, openY: -height / 2 - 10 };
-  }
-
-  private drawCable(plateX: number, targetX: number) {
-    this.add.graphics().lineStyle(2, 0xb68247, .65).lineBetween(plateX, 469, targetX, 469).setDepth(2);
-  }
-
-  private addGate(plateX: number, gateX: number) {
-    const plate = this.addPlate(plateX);
-    this.drawCable(plateX, gateX);
-    this.gates.push({ plates: [plate], bodies: [this.addBarrierBody(gateX)], requireAll: false, latchesOpen: false, open: false });
-  }
-
-  private addShutterRun(plateX: number, gateXs: number[]) {
-    const plate = this.addPlate(plateX);
-    gateXs.forEach(gateX => this.drawCable(plateX, gateX));
-    this.gates.push({ plates: [plate], bodies: gateXs.map(gateX => this.addBarrierBody(gateX)), requireAll: false, latchesOpen: false, open: false });
-  }
-
-  private addDualGate(plateXs: number[], gateX: number) {
-    const plates = plateXs.map(x => this.addPlate(x));
-    plateXs.forEach(x => this.drawCable(x, gateX));
-    this.gates.push({ plates, bodies: [this.addBarrierBody(gateX)], requireAll: true, latchesOpen: true, open: false, closeDelayMs: 3000 });
-  }
-
-  private addPoweredLift(plateX: number, startX: number, endX: number) {
-    const plate = this.addPlate(plateX);
-    this.drawCable(plateX, startX);
-    const platform = this.add.rectangle(startX, 405, 130, 18, 0x4f8177).setStrokeStyle(2, 0xb9d8d0).setDepth(3);
+  private addMover(x: number, y: number, width: number, dx: number, speed: number) {
+    const platform = this.add.rectangle(x, y, width, 16, 0x4f8177).setStrokeStyle(2, 0xb9d8d0).setDepth(3);
     this.physics.add.existing(platform);
     const body = platform.body as Phaser.Physics.Arcade.Body;
     body.setAllowGravity(false).setImmovable(true);
     body.pushable = false;
-    this.lift = { platform, plate, startX, endX, direction: 1, powered: false };
+    this.movers.push({ platform, x0: x, span: Math.max(1, dx), speed, dir: 1 });
   }
+
+  private addBouncer(x: number, surfaceY: number) {
+    // Build the body from the already-origin'd image so the overlap zone hugs the cap.
+    const cap = this.add.image(x, surfaceY, 'bouncer').setOrigin(.5, 1).setDepth(3);
+    this.physics.add.existing(cap, true);
+    cap.setData('bouncer', true);
+    this.physics.add.overlap(this.player, cap, () => {
+      const body = this.player.body as Phaser.Physics.Arcade.Body;
+      if (body.velocity.y > -260 && this.time.now > (cap.getData('bounceAt') ?? 0)) {
+        cap.setData('bounceAt', this.time.now + 200);
+        body.setVelocityY(-760);
+        audio.play('bounce');
+        this.dust.explode(8, x, surfaceY - 14);
+        this.tweens.add({ targets: cap, scaleY: .6, scaleX: 1.25, duration: 90, yoyo: true, ease: 'Quad.Out' });
+      }
+    });
+  }
+
+  private addWind(x: number, width: number, fx: number) {
+    this.winds.push({ zone: new Phaser.Geom.Rectangle(x, 120, width, HEIGHT - 120), fx });
+    this.add.particles(0, 0, 'p-dot', {
+      x: { min: x, max: x + width },
+      y: { min: 150, max: 460 },
+      lifespan: 1500,
+      speedX: { min: fx * 1.4, max: fx * 2.2 },
+      speedY: { min: 4, max: 16 },
+      scale: { start: .9, end: .2 },
+      alpha: { start: .55, end: .08 },
+      quantity: 1,
+      frequency: 240,
+      tint: 0x9fd08a,
+    }).setDepth(2);
+  }
+
+  private addCrusher(x: number, hangY: number, slamY: number, period: number, phase: number) {
+    // The head is solid (you can ride it) but only the crush itself hurts.
+    const head = this.add.rectangle(x, hangY, 64, 36, 0x4a3f38).setStrokeStyle(3, 0xb68247).setDepth(3);
+    this.physics.add.existing(head, true);
+    this.platforms.add(head);
+    const column = this.add.rectangle(x, 0, 18, 10, 0x3a322c).setOrigin(.5, 0).setStrokeStyle(2, 0x6a5a4a, .6).setDepth(2);
+    const teeth = this.add.rectangle(x, hangY + 14, 64, 8, 0xbc6655).setDepth(3);
+    this.crushers.push({ head, column, teeth, x, hangY, slamY, period, phase });
+    this.physics.add.overlap(this.player, head, () => this.hurtPlayer());
+  }
+
+  private addPendulum(x: number, pivotY: number, length: number, period: number, phase: number, amplitude: number) {
+    const bob = this.physics.add.staticImage(x, pivotY + length, 'bob').setDepth(4);
+    bob.setData('hazard', true);
+    const chain = this.add.graphics().setDepth(3);
+    this.pendulums.push({ bob, chain, x, pivotY, length, period, phase, amplitude });
+    this.physics.add.overlap(this.player, bob, () => this.hurtPlayer());
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Devices
+  // ─────────────────────────────────────────────────────────────
+
+  private addPlate(x: number, tint = 0xb68247) {
+    return this.add.rectangle(x, 465, 68, 10, tint).setStrokeStyle(2, 0xe4c288).setDepth(3);
+  }
+
+  private addBarrierBody(x: number, stroke = 0xb68247) {
+    const height = 388;
+    const closedY = 274;
+    const body = this.add.rectangle(x, closedY, 30, height, 0x263b36).setStrokeStyle(3, stroke).setDepth(4);
+    this.physics.add.existing(body, true);
+    this.platforms.add(body);
+    this.add.rectangle(x, 74, 100, 18, 0x314840).setStrokeStyle(2, stroke).setDepth(4);
+    return { rect: body, closedY, openY: -height / 2 - 10 };
+  }
+
+  private drawCable(plateX: number, targetX: number, targetY = 469) {
+    this.add.graphics().lineStyle(2, 0xb68247, .65).lineBetween(plateX, 469, targetX, targetY).setDepth(2);
+  }
+
+  private addHoldGate(plateXs: number[], gateXs: number[], requireAll: boolean, latch: boolean, closeDelayMs?: number) {
+    const plates = plateXs.map(x => this.addPlate(x));
+    gateXs.forEach(gateX => plateXs.forEach(plateX => this.drawCable(plateX, gateX)));
+    this.holdGates.push({ bodies: gateXs.map(x => this.addBarrierBody(x)), open: false, plates, requireAll, latch, closeDelayMs });
+  }
+
+  private addTimedGate(plateX: number, gateXs: number[], openMs: number) {
+    const plate = this.addPlate(plateX, 0x8a6a4a);
+    gateXs.forEach(gateX => this.drawCable(plateX, gateX));
+    this.timedGates.push({ bodies: gateXs.map(x => this.addBarrierBody(x)), open: false, plate, openMs, expiry: 0 });
+  }
+
+  private addRelayGate(plateXs: number[], gateX: number, holdMs: number) {
+    const plates = plateXs.map(x => this.addPlate(x, 0x6a7a5a));
+    const bars = plates.map(plate => this.add.rectangle(plate.x, 448, 60, 5, 0x9fd08a).setDepth(3));
+    plateXs.forEach(x => this.drawCable(x, gateX));
+    this.relayGates.push({
+      bodies: [this.addBarrierBody(gateX)], open: false,
+      plates, bars, holdMs, state: emptyRelayState(plates.length) as number[],
+    });
+  }
+
+  private addSequenceGate(plateXs: number[], gateX: number, order: number[]) {
+    const plates = plateXs.map(x => this.addPlate(x, 0x7a5a8a));
+    const lamps: Phaser.GameObjects.Rectangle[] = [];
+    const labels: Phaser.GameObjects.Text[] = [];
+    plateXs.forEach((x, index) => {
+      const lamp = this.add.circle(x, 424, 9, 0x22312c).setStrokeStyle(2, 0x688078).setDepth(3);
+      const label = this.add.text(x, 424, String(sequenceLampLabel(order, index)), {
+        fontFamily: '"DM Mono", monospace', fontSize: '11px', color: '#8fa39b',
+      }).setOrigin(.5).setDepth(4);
+      lamps.push(lamp as unknown as Phaser.GameObjects.Rectangle);
+      labels.push(label);
+      this.drawCable(x, gateX);
+    });
+    this.sequenceGates.push({
+      bodies: [this.addBarrierBody(gateX)], open: false,
+      plates, lamps, labels, order, progress: 0, prev: plates.map(() => false),
+    });
+  }
+
+  private addEchoGate(switchXs: number[], gateX: number) {
+    const pads: Phaser.GameObjects.Rectangle[] = [];
+    const crystals: Phaser.GameObjects.Image[] = [];
+    switchXs.forEach(x => {
+      const pad = this.add.rectangle(x, 462, 72, 14, 0x1f3a36).setStrokeStyle(2, 0x7fd8c8, .9).setDepth(3);
+      const crystal = this.add.image(x, 462, 'resonator').setOrigin(.5, 1).setDepth(4).setAlpha(.85).setTint(0x9fbdb4);
+      pads.push(pad);
+      crystals.push(crystal);
+      this.drawCable(x, gateX);
+      this.tweens.add({ targets: crystal, y: 452, duration: 1200, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    });
+    this.echoGates.push({ bodies: [this.addBarrierBody(gateX, 0x7fd8c8)], open: false, pads, crystals, states: switchXs.map(() => false), prev: switchXs.map(() => false) });
+  }
+
+  private addGuardGate(enemyIndex: number, gateX: number) {
+    this.drawCable(gateX - 160, gateX);
+    this.guardGates.push({ bodies: [this.addBarrierBody(gateX, 0xd16151)], open: false, enemyIndex });
+  }
+
+  private addLift(plateX: number, x: number, from: number, to: number, axis: 'x' | 'y', speed: number) {
+    const plate = this.addPlate(plateX);
+    const baseX = axis === 'x' ? from : x;
+    const baseY = axis === 'y' ? from : 405;
+    this.drawCable(plateX, baseX, baseY + 64);
+    const platform = this.add.rectangle(baseX, baseY, 130, 18, 0x4f8177).setStrokeStyle(2, 0xb9d8d0).setDepth(3);
+    this.physics.add.existing(platform);
+    const body = platform.body as Phaser.Physics.Arcade.Body;
+    body.setAllowGravity(false).setImmovable(true);
+    body.pushable = false;
+    this.lifts.push({ platform, plate, axis, baseX, baseY, from, to, speed, dir: 1, powered: false });
+  }
+
+  private setGateOpen(gate: GateCore, opening: boolean, silent = false) {
+    if (gate.open === opening) return;
+    gate.open = opening;
+    if (!silent) audio.play(opening ? 'plate' : 'gate');
+    gate.bodies.forEach(barrier => {
+      const body = barrier.rect.body as Phaser.Physics.Arcade.StaticBody;
+      body.enable = false;
+      this.tweens.killTweensOf(barrier.rect);
+      this.tweens.add({
+        targets: barrier.rect,
+        y: opening ? barrier.openY : barrier.closedY,
+        alpha: opening ? .2 : 1,
+        duration: opening ? 320 : 220,
+        ease: opening ? 'Cubic.Out' : 'Cubic.In',
+        onComplete: () => {
+          body.updateFromGameObject();
+          body.enable = !opening;
+        },
+      });
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Actors
+  // ─────────────────────────────────────────────────────────────
 
   private createPlayer() {
     this.player = this.physics.add.sprite(140, 430, 'courier').setDepth(8);
@@ -297,73 +644,197 @@ class GameScene extends Phaser.Scene {
   }
 
   private createEnemies() {
-    this.enemies = this.physics.add.group({ allowGravity: true });
-    LEVEL_BLUEPRINT.enemies.forEach(([x, y], i) => {
-      const enemy = this.enemies.create(x, y, 'crawler') as Phaser.Physics.Arcade.Sprite;
-      enemy.setVelocityX(i % 2 ? 70 : -70).setBounce(1, 0).setCollideWorldBounds(true).setData('alive', true).setDepth(7);
-      (enemy.body as Phaser.Physics.Arcade.Body).setSize(28, 27).setOffset(2, 4);
+    this.groundEnemies = this.physics.add.group({ allowGravity: true });
+    this.airEnemies = this.physics.add.group({ allowGravity: false });
+    this.level.enemies.forEach((spec, index) => {
+      const flying = spec.kind === 'flyer';
+      const enemy = (flying ? this.airEnemies : this.groundEnemies).create(spec.x, spec.y, spec.kind) as Phaser.Physics.Arcade.Sprite;
+      enemy.setData('kind', spec.kind).setData('alive', true).setData('index', index).setData('anchorX', spec.x).setData('anchorY', spec.y).setData('phase', index * 1.7);
+      enemy.setDepth(7);
+      const body = enemy.body as Phaser.Physics.Arcade.Body;
+      switch (spec.kind) {
+        case 'crawler':
+          enemy.setVelocityX(index % 2 ? 70 : -70).setBounce(1, 0).setCollideWorldBounds(true);
+          body.setSize(28, 27).setOffset(2, 4);
+          break;
+        case 'flyer':
+          body.setImmovable(true).setSize(26, 20).setOffset(2, 2);
+          break;
+        case 'spitter':
+          body.setImmovable(true).setSize(24, 30).setOffset(3, 3);
+          enemy.setData('nextShot', 1200);
+          break;
+        case 'charger':
+          enemy.setBounce(0, 0).setCollideWorldBounds(true).setData('state', 'patrol').setData('dir', -1);
+          body.setSize(34, 22).setOffset(3, 5);
+          break;
+        case 'warden':
+          enemy.setCollideWorldBounds(true).setData('hp', 3).setData('state', 'patrol').setData('dir', -1);
+          body.setImmovable(true).setSize(42, 30).setOffset(3, 5);
+          break;
+      }
     });
+    this.projectiles = this.physics.add.group({ allowGravity: false });
   }
 
   private createShards() {
     this.shards = this.physics.add.staticGroup();
-    LEVEL_BLUEPRINT.shards.forEach(([x,y], i) => {
+    this.level.shards.forEach(([x, y], i) => {
       const shard = this.shards.create(x, y, 'shard') as Phaser.Physics.Arcade.Sprite;
       shard.setData('baseY', y).setData('phase', i * .55).setDepth(5);
     });
   }
 
   private createCheckpointAndGoal() {
-    LEVEL_BLUEPRINT.checkpoints.forEach(x => {
+    this.level.checkpoints.forEach(x => {
       const relay = this.add.rectangle(x, 424, 18, 88, 0x516a62).setStrokeStyle(2, 0xd4a258).setDepth(3);
       relay.setData('checkpoint', true);
       this.physics.add.existing(relay, true);
       this.physics.add.overlap(this.player, relay, () => this.activateCheckpoint(relay, x - 30));
     });
-    const goal = this.add.rectangle(LEVEL_BLUEPRINT.goalX, 370, 70, 196, 0x243b35).setStrokeStyle(4, 0xe0a85a).setDepth(3);
-    this.add.circle(LEVEL_BLUEPRINT.goalX, 340, 21, 0xe0a85a, .85).setDepth(4);
+    const goal = this.add.rectangle(this.level.goalX, 370, 70, 196, 0x243b35).setStrokeStyle(4, 0xe0a85a).setDepth(3);
+    this.add.circle(this.level.goalX, 340, 21, 0xe0a85a, .85).setDepth(4);
     goal.setData('goal', true);
     this.physics.add.existing(goal, true);
     this.physics.add.overlap(this.player, goal, () => this.win());
   }
 
-  private bindInput() {
-    this.cursors = this.input.keyboard!.createCursorKeys();
-    this.keys = this.input.keyboard!.addKeys('W,A,D,E,R,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
-    this.input.keyboard!.on('keydown-E', () => this.toggleRecording());
-    this.input.keyboard!.on('keydown-R', () => this.restart());
-    this.input.keyboard!.on('keydown-ESC', () => this.togglePause());
+  private createParticles() {
+    this.dust = this.add.particles(0, 0, 'p-dot', {
+      emitting: false, speed: { min: 30, max: 110 }, angle: { min: 200, max: 340 },
+      gravityY: 320, lifespan: 480, scale: { start: 1.1, end: 0 }, tint: 0xcfe3d8,
+    }).setDepth(6);
+    this.sparkle = this.add.particles(0, 0, 'p-dot', {
+      emitting: false, speed: { min: 40, max: 140 }, angle: { min: 0, max: 360 },
+      gravityY: -60, lifespan: 560, scale: { start: 1.2, end: 0 }, tint: 0xf1d7a9,
+    }).setDepth(9);
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Input
+  // ─────────────────────────────────────────────────────────────
+
+  private bindInput() {
+    const keyboard = this.input.keyboard!;
+    this.cursors = keyboard.createCursorKeys();
+    this.keys = keyboard.addKeys('W,A,D,E,R,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
+    keyboard.on('keydown-E', () => this.toggleRecording());
+    keyboard.on('keydown-R', () => this.restartRun());
+    keyboard.on('keydown-ESC', () => this.togglePause());
+  }
+
+  /** Touch handlers call these directly; they are safe to fire between frames. */
+  queueJump() {
+    if (!this.gameStarted || this.gameEnded || this.paused) return;
+    this.jumpQueuedAt = this.time.now;
+  }
+
+  setTouchDirection(dir: 'left' | 'right' | 'none') {
+    touch.left = dir === 'left';
+    touch.right = dir === 'right';
+  }
+
+  setTouchJumpHeld(held: boolean) {
+    touch.jumpHeld = held;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Physics wiring
+  // ─────────────────────────────────────────────────────────────
 
   private bindPhysics() {
     this.physics.add.collider(this.player, this.platforms, (_player, object) => {
-      if ((object as Phaser.GameObjects.GameObject).getData('hazard')) this.hurtPlayer();
+      const block = object as Phaser.GameObjects.GameObject;
+      if (block.getData('hazard')) this.hurtPlayer();
+      if (block.getData('crumble')) this.touchCrumble(block as Phaser.GameObjects.Rectangle);
     });
-    this.physics.add.collider(this.enemies, this.platforms);
-    if (this.lift) this.physics.add.collider(this.player, this.lift.platform);
-    this.physics.add.collider(this.player, this.enemies, (playerObject, enemyObject) => {
-      const player = playerObject as Phaser.Physics.Arcade.Sprite;
-      const enemy = enemyObject as Phaser.Physics.Arcade.Sprite;
-      const playerBody = player.body as Phaser.Physics.Arcade.Body;
-      const enemyBody = enemy.body as Phaser.Physics.Arcade.Body;
-      if (!enemy.getData('alive')) return;
-      const stompedFromAbove = playerBody.deltaY() > 0 && playerBody.bottom <= enemyBody.center.y + 10;
-      if (stompedFromAbove) {
-        enemy.setData('alive', false).disableBody(true, true);
-        player.setVelocityY(-330);
-        audio.play('stomp');
-        this.cameras.main.shake(80, .003);
-      } else this.hurtPlayer();
-    });
+    this.physics.add.collider(this.groundEnemies, this.platforms);
+    this.lifts.forEach(lift => this.physics.add.collider(this.player, lift.platform));
+    this.movers.forEach(mover => this.physics.add.collider(this.player, mover.platform));
+    this.physics.add.collider(this.player, this.groundEnemies, (playerObject, enemyObject) => this.onPlayerEnemy(playerObject as Phaser.Physics.Arcade.Sprite, enemyObject as Phaser.Physics.Arcade.Sprite));
+    this.physics.add.collider(this.player, this.airEnemies, (playerObject, enemyObject) => this.onPlayerEnemy(playerObject as Phaser.Physics.Arcade.Sprite, enemyObject as Phaser.Physics.Arcade.Sprite));
     this.physics.add.overlap(this.player, this.shards, (_p, shardObject) => {
       const shard = shardObject as Phaser.Physics.Arcade.Sprite;
       shard.disableBody(true, true);
       this.shardsFound += 1;
       audio.play('shard');
-      ui.shard.textContent = `${this.shardsFound} / ${TOTAL_SHARDS}`;
+      this.sparkle.explode(6, shard.x, shard.y);
+      ui.shard.textContent = `${this.shardsFound} / ${this.totalShards}`;
       this.tweens.add({ targets: ui.shard, scale: 1.16, duration: 90, yoyo: true });
     });
+    this.physics.add.collider(this.projectiles, this.platforms, (orb) => this.popProjectile(orb as Phaser.Physics.Arcade.Image));
+    this.physics.add.overlap(this.projectiles, this.player, (orb) => {
+      this.popProjectile(orb as Phaser.Physics.Arcade.Image);
+      this.hurtPlayer();
+    });
   }
+
+  private onPlayerEnemy(playerObject: Phaser.Physics.Arcade.Sprite, enemyObject: Phaser.Physics.Arcade.Sprite) {
+    const player = this.player;
+    const enemy = enemyObject;
+    if (!enemy.active || !enemy.getData('alive') || this.gameEnded) return;
+    const playerBody = player.body as Phaser.Physics.Arcade.Body;
+    const enemyBody = enemy.body as Phaser.Physics.Arcade.Body;
+    const stompedFromAbove = playerBody.deltaY() > 0 && playerBody.bottom <= enemyBody.center.y + 10;
+    if (stompedFromAbove) {
+      player.setVelocityY(-330);
+      audio.play('stomp');
+      this.cameras.main.shake(80, .003);
+      this.dust.explode(7, enemy.x, enemy.y + 8);
+      if (enemy.getData('kind') === 'warden') this.hitWarden(enemy, playerBody.center.x);
+      else this.killEnemy(enemy);
+    } else this.hurtPlayer();
+  }
+
+  private killEnemy(enemy: Phaser.Physics.Arcade.Sprite) {
+    enemy.setData('alive', false);
+    enemy.disableBody(true, true);
+    audio.play('pop');
+    this.sparkle.explode(8, enemy.x, enemy.y);
+  }
+
+  private hitWarden(enemy: Phaser.Physics.Arcade.Sprite, playerX: number) {
+    const hp = (enemy.getData('hp') as number) - 1;
+    enemy.setData('hp', hp);
+    enemy.setTintFill(0xffffff);
+    this.time.delayedCall(130, () => { if (enemy.active) enemy.clearTint(); });
+    if (hp <= 0) {
+      this.killEnemy(enemy);
+      audio.play('unlock');
+      this.cameras.main.shake(220, .008);
+      this.sparkle.explode(16, enemy.x, enemy.y);
+      this.openGuardGates();
+      this.showMessage('The warden falls. The gate yields.', 2600);
+    } else {
+      audio.play('slam');
+      enemy.setData('staggerUntil', this.time.now + 450);
+      const knock = enemy.x < playerX ? -170 : 170;
+      (enemy.body as Phaser.Physics.Arcade.Body).setVelocityX(knock);
+      this.cameras.main.shake(120, .005);
+    }
+  }
+
+  private openGuardGates() {
+    this.guardGates.forEach(gate => this.setGateOpen(gate, true, true));
+  }
+
+  private popProjectile(orb: Phaser.Physics.Arcade.Image) {
+    if (!orb.active) return;
+    this.dust.explode(4, orb.x, orb.y);
+    orb.destroy();
+  }
+
+  private touchCrumble(rect: Phaser.GameObjects.Rectangle) {
+    const crumble = this.crumbles.find(c => c.rect === rect);
+    if (!crumble || crumble.state !== 'idle') return;
+    crumble.state = 'shake';
+    crumble.until = this.time.now + 460;
+    audio.play('crumble');
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Frame update
+  // ─────────────────────────────────────────────────────────────
 
   update(time: number, delta: number) {
     const cameraX = this.cameras.main.scrollX;
@@ -379,27 +850,47 @@ class GameScene extends Phaser.Scene {
       this.lastTimerTick = timerTick;
       ui.timer.textContent = formatRunTime(this.runElapsedMs);
     }
-    const body = this.player.body as Phaser.Physics.Arcade.Body;
-    const left = this.cursors.left.isDown || this.keys.A.isDown;
-    const right = this.cursors.right.isDown || this.keys.D.isDown;
-    const jumpPressed = Phaser.Input.Keyboard.JustDown(this.cursors.space) || Phaser.Input.Keyboard.JustDown(this.keys.W) || Phaser.Input.Keyboard.JustDown(this.cursors.up);
-    const grounded = body.blocked.down || body.touching.down;
-    if (grounded) this.lastGroundedAt = time;
-    if (jumpPressed) this.jumpQueuedAt = time;
 
-    if (left) { this.player.setAccelerationX(-950); this.player.setFlipX(true); }
-    else if (right) { this.player.setAccelerationX(950); this.player.setFlipX(false); }
-    else this.player.setAccelerationX(0);
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    const left = this.cursors.left.isDown || this.keys.A.isDown || touch.left;
+    const right = this.cursors.right.isDown || this.keys.D.isDown || touch.right;
+    const jumpPressed = Phaser.Input.Keyboard.JustDown(this.cursors.space) || Phaser.Input.Keyboard.JustDown(this.keys.W) || Phaser.Input.Keyboard.JustDown(this.cursors.up);
+    if (jumpPressed) this.queueJump();
+    const jumpHeld = this.cursors.space.isDown || this.keys.W.isDown || this.cursors.up.isDown || touch.jumpHeld;
+
+    const grounded = body.blocked.down || body.touching.down;
+    if (grounded) {
+      this.lastGroundedAt = time;
+      this.jumpActive = false;
+    }
+
+    let windAccel = 0;
+    for (const wind of this.winds) {
+      const zone = wind.zone;
+      if (body.right > zone.x && body.left < zone.right && body.bottom > zone.y && body.top < zone.bottom) {
+        windAccel += wind.fx;
+      }
+    }
+
+    if (left) { this.player.setAccelerationX(-950 + windAccel); this.player.setFlipX(true); }
+    else if (right) { this.player.setAccelerationX(950 + windAccel); this.player.setFlipX(false); }
+    else this.player.setAccelerationX(windAccel);
 
     if (time - this.jumpQueuedAt <= 120 && time - this.lastGroundedAt <= 110) {
       this.player.setVelocityY(-465);
       audio.play('jump');
       this.jumpQueuedAt = Number.NEGATIVE_INFINITY;
       this.lastGroundedAt = Number.NEGATIVE_INFINITY;
+      this.jumpActive = true;
     }
-    const jumpReleased = Phaser.Input.Keyboard.JustUp(this.cursors.space) || Phaser.Input.Keyboard.JustUp(this.keys.W) || Phaser.Input.Keyboard.JustUp(this.cursors.up);
-    if (jumpReleased && body.velocity.y < -190) this.player.setVelocityY(body.velocity.y * .58);
-    if (grounded && !this.wasGrounded) audio.play('land');
+    if (this.jumpActive && !jumpHeld && body.velocity.y < -190) {
+      this.player.setVelocityY(body.velocity.y * .58);
+      this.jumpActive = false;
+    }
+    if (grounded && !this.wasGrounded) {
+      audio.play('land');
+      this.dust.explode(5, this.player.x, this.player.y);
+    }
     if (grounded && (left || right) && Math.abs(body.velocity.x) > 45 && time - this.lastStepAt > 250) {
       this.lastStepAt = time;
       audio.play('step');
@@ -414,44 +905,542 @@ class GameScene extends Phaser.Scene {
       ui.echo.textContent = `REC ${(Math.max(0, ECHO_DURATION_MS / 1000 - elapsed / 1000)).toFixed(1)}s`;
       if (elapsed >= ECHO_DURATION_MS) this.finishRecording();
     }
+    this.drawRecordingRing(time);
     this.updateEcho(time);
-    this.updateGates();
-    this.updateLift();
-    this.updateEnemies();
+    this.updateDevices(time);
+    this.updateMovers(delta);
+    this.updateCrushers(time);
+    this.updatePendulums(time);
+    this.updateEnemies(time);
+    this.updateProjectiles(time);
+    this.updateCrumbles(time);
     this.updateShards(time);
-
-    if (this.player.x > 1180 && this.player.x < 1330) this.hintOnce('echo', 'Record a still echo on the plate, then cross before its timeline ends.');
-    if (this.player.x > 2500 && this.player.x < 2660) this.hintOnce('lift', 'The brass circuit powers the lift only while you or your echo holds it.');
-    if (this.player.x > 4100 && this.player.x < 4240) this.hintOnce('shutters', 'One sustained echo can hold all three shutters open.');
-    if (this.player.x > 5400 && this.player.x < 5510) this.hintOnce('dual', 'Hold both locks — release one and the vault starts closing. Reach the gate in time.');
+    this.updateHints();
   }
 
   private updatePlayerAnimation(grounded: boolean, moving: boolean) {
-    if (this.time.now < this.invulnerableUntil) {
-      this.player.play('courier-hurt', true);
-      return;
-    }
-    if (!grounded) {
-      this.player.play('courier-jump', true);
-      return;
-    }
-    if (this.recording && !moving) {
-      this.player.play('courier-record', true);
-      return;
-    }
+    if (this.recording) { this.player.play('courier-record', true); return; }
+    if (!grounded) { this.player.play('courier-jump', true); return; }
     this.player.play(moving ? 'courier-run' : 'courier-idle', true);
   }
 
-  private updateEnemies() {
-    this.enemies.children.iterate(child => {
+  private drawRecordingRing(time: number) {
+    this.echoGfx.clear();
+    if (!this.recording) return;
+    const elapsed = time - this.recordStarted;
+    const progress = Math.min(1, elapsed / ECHO_DURATION_MS);
+    const cx = this.player.x;
+    const cy = this.player.y - 74;
+    this.echoGfx.lineStyle(3, 0x2c3f3a, .8).strokeCircle(cx, cy, 13);
+    this.echoGfx.lineStyle(3, 0xe0a85a, .95);
+    this.echoGfx.beginPath();
+    this.echoGfx.arc(cx, cy, 13, Phaser.Math.DegToRad(-90), Phaser.Math.DegToRad(-90 + 360 * progress));
+    this.echoGfx.strokePath();
+  }
+
+  private updateHints() {
+    if (this.hints.length === 0) return;
+    const next = this.hints[0];
+    if (this.player.x >= next.atX) {
+      this.hints.shift();
+      this.showMessage(next.text, 4200);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Echo
+  // ─────────────────────────────────────────────────────────────
+
+  /** Also wired to the on-screen ECHO button. */
+  toggleRecording() {
+    if (!this.gameStarted || this.gameEnded || this.paused) return;
+    if (this.recording) { this.finishRecording(); return; }
+    this.playingEcho = false;
+    if (this.echo) {
+      this.tweens.killTweensOf(this.echo);
+      this.echo.destroy();
+      this.echo = undefined;
+    }
+    this.echoFrames = [];
+    this.recording = true;
+    this.recordStarted = this.time.now;
+    audio.play('record');
+    this.player.setTint(0xe8bd7c);
+    ui.echo.textContent = 'RECORDING';
+    this.showMessage('Recording timeline. Release to send the echo.', 1800);
+  }
+
+  private finishRecording() {
+    if (!this.recording || this.echoFrames.length < 2) return;
+    this.recording = false;
+    this.player.clearTint();
+    this.playingEcho = true;
+    this.playbackStarted = this.time.now;
+    const first = this.echoFrames[0];
+    this.echo = this.add.sprite(first.x, first.y, 'courier').setOrigin(.5, .90625).setScale(.42).setAlpha(.5).setTint(0x8dc9bd).setDepth(6).play('courier-idle');
+    this.tweens.add({ targets: this.echo, alpha: { from: .38, to: .62 }, duration: 520, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    const ring = this.add.circle(first.x, first.y - 30, 10).setStrokeStyle(2, 0x8dc9bd, .9).setDepth(6);
+    this.tweens.add({ targets: ring, scale: 4, alpha: 0, duration: 420, onComplete: () => ring.destroy() });
+    audio.play('echo');
+    ui.echo.textContent = 'PLAYING';
+  }
+
+  private updateEcho(time: number) {
+    if (!this.playingEcho || !this.echo || this.echoFrames.length < 2) return;
+    const elapsed = time - this.playbackStarted;
+    const last = this.echoFrames[this.echoFrames.length - 1];
+    if (elapsed >= last.t) {
+      this.echo.setPosition(last.x, last.y);
+      this.playingEcho = false;
+      ui.echo.textContent = 'READY';
+      this.tweens.killTweensOf(this.echo);
+      this.tweens.add({ targets: this.echo, alpha: 0, duration: 380, onComplete: () => this.echo?.destroy() });
+      return;
+    }
+    const sample = sampleEchoFrame(this.echoFrames, elapsed);
+    if (sample) {
+      const moving = Math.abs(sample.x - this.echo.x) > .35;
+      this.echo.setPosition(sample.x, sample.y).setFlipX(sample.flipX).play(moving ? 'courier-run' : 'courier-idle', true);
+    }
+  }
+
+  private echoActive() {
+    return this.playingEcho && !!this.echo?.active;
+  }
+
+  private isPlateActive(plate: Phaser.GameObjects.Rectangle) {
+    const playerOn = Phaser.Geom.Rectangle.Overlaps(this.player.getBounds(), plate.getBounds());
+    const echoOn = this.echoActive() && Phaser.Geom.Rectangle.Overlaps(this.echo!.getBounds(), plate.getBounds());
+    return playerOn || echoOn;
+  }
+
+  /** Nearest decoy-able target (the player or the echo) for smart enemies. */
+  private nearestTarget(x: number, y: number, range: number, maxDy = Number.POSITIVE_INFINITY) {
+    let bestD2 = range * range;
+    let bestX = 0;
+    let bestY = 0;
+    let found = false;
+    const consider = (tx: number, ty: number) => {
+      const dy = Math.abs(ty - y);
+      if (dy > maxDy) return;
+      const dx = tx - x;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { bestD2 = d2; bestX = tx; bestY = ty; found = true; }
+    };
+    if (!this.gameEnded) consider(this.player.x, this.player.y);
+    if (this.echoActive()) consider(this.echo!.x, this.echo!.y);
+    return found ? { x: bestX, y: bestY } : null;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Devices update
+  // ─────────────────────────────────────────────────────────────
+
+  private updateDevices(time: number) {
+    this.updateHoldGates(time);
+    this.updateTimedGates(time);
+    this.updateRelayGates(time);
+    this.updateSequenceGates(time);
+    this.updateEchoGates(time);
+    this.updateLifts();
+  }
+
+  private updateHoldGates(time: number) {
+    this.holdGates.forEach(gate => {
+      const plateStates = gate.plates.map(plate => this.isPlateActive(plate));
+      const mode: HoldMode = gate.requireAll ? 'all' : 'any';
+      const activated = holdGateOpen(plateStates, mode, false);
+      const shouldOpen = gate.latch ? holdGateOpen(plateStates, mode, gate.open) : activated;
+      gate.plates.forEach((plate, index) => plate.setFillStyle(plateStates[index] ? 0xe0a85a : 0xb68247));
+
+      if (gate.closeDelayMs !== undefined) {
+        if (activated && !gate.open) this.setGateOpen(gate, true);
+        else if (!activated && gate.open) this.armGateClose(gate, time);
+        else if (activated && gate.closeTimer) this.disarmGateClose(gate);
+        return;
+      }
+      if (shouldOpen !== gate.open) this.setGateOpen(gate, shouldOpen);
+    });
+  }
+
+  private armGateClose(gate: HoldGate, _time: number) {
+    if (gate.closeTimer || gate.closeDelayMs === undefined) return;
+    audio.play('gate');
+    gate.closeTimer = this.time.delayedCall(gate.closeDelayMs, () => {
+      gate.closeTimer = undefined;
+      this.setGateOpen(gate, false);
+    });
+  }
+
+  private disarmGateClose(gate: HoldGate) {
+    if (!gate.closeTimer) return;
+    gate.closeTimer.remove(false);
+    gate.closeTimer = undefined;
+  }
+
+  private updateTimedGates(time: number) {
+    this.timedGates.forEach(gate => {
+      const active = this.isPlateActive(gate.plate);
+      gate.plate.setFillStyle(active ? 0xe0a85a : 0x8a6a4a);
+      if (active) {
+        const fresh = gate.expiry < time;
+        gate.expiry = time + gate.openMs;
+        if (!gate.open) {
+          audio.play(fresh ? 'plate' : 'toggle');
+          this.setGateOpen(gate, true, true);
+        }
+      }
+      if (gate.open) {
+        const remaining = gate.expiry - time;
+        if (remaining <= 0) {
+          this.setGateOpen(gate, false);
+        } else {
+          const blink = remaining < 1200 ? (Math.sin(time / 55) > 0 ? .55 : .2) : .2;
+          gate.bodies.forEach(barrier => barrier.rect.setAlpha(blink));
+        }
+      }
+    });
+  }
+
+  private updateRelayGates(time: number) {
+    this.relayGates.forEach(gate => {
+      gate.plates.forEach((plate, index) => {
+        if (this.isPlateActive(plate)) gate.state = touchRelayPlate(gate.state, index, time, gate.holdMs) as number[];
+        const charge = relayCharge(gate.state, index, time, gate.holdMs);
+        gate.bars[index].setDisplaySize(60 * charge, 5).setAlpha(charge > 0 ? .95 : .18);
+        plate.setFillStyle(charge > 0 ? 0x9fd08a : 0x6a7a5a);
+      });
+      const shouldOpen = relayGateOpen(gate.state, time);
+      if (shouldOpen !== gate.open) this.setGateOpen(gate, shouldOpen);
+    });
+  }
+
+  private updateSequenceGates(time: number) {
+    void time;
+    this.sequenceGates.forEach(gate => {
+      if (gate.progress >= gate.order.length) {
+        gate.lamps.forEach((lamp, index) => {
+          lamp.setFillStyle(0xe0a85a);
+          gate.labels[index].setColor('#171713');
+        });
+        return;
+      }
+      const active = gate.plates.map(plate => this.isPlateActive(plate));
+      active.forEach((on, index) => {
+        if (on && !gate.prev[index]) {
+          const before = gate.progress;
+          gate.progress = advanceSequence(gate.progress, index, gate.order);
+          if (gate.progress > before) {
+            audio.play('good');
+            if (gate.progress >= gate.order.length) {
+              audio.play('unlock');
+              this.setGateOpen(gate, true, true);
+              this.showMessage('The tea-press accepts the sequence. Gate released.', 2600);
+            }
+          } else {
+            gate.progress = 0;
+            audio.play('bad');
+            this.cameras.main.shake(90, .003);
+          }
+        }
+        gate.prev[index] = on;
+      });
+      gate.lamps.forEach((lamp, index) => {
+        const lit = gate.order.indexOf(index) < gate.progress;
+        lamp.setFillStyle(lit ? 0xe0a85a : 0x22312c);
+        gate.labels[index].setColor(lit ? '#171713' : '#8fa39b');
+      });
+    });
+  }
+
+  private updateEchoGates(time: number) {
+    void time;
+    this.echoGates.forEach(gate => {
+      gate.pads.forEach((pad, index) => {
+        const over = this.echoActive() && Phaser.Geom.Rectangle.Overlaps(this.echo!.getBounds(), pad.getBounds());
+        if (over && !gate.prev[index]) {
+          gate.states[index] = !gate.states[index];
+          audio.play(gate.states[index] ? 'chime' : 'toggle');
+          this.sparkle.explode(8, pad.x, 440);
+          gate.crystals[index].setTint(gate.states[index] ? 0xffffff : 0x9fbdb4);
+        }
+        gate.prev[index] = over;
+        pad.setFillStyle(gate.states[index] ? 0x2c5a50 : 0x1f3a36);
+      });
+      const shouldOpen = echoSwitchGateOpen(gate.states);
+      if (shouldOpen !== gate.open) this.setGateOpen(gate, shouldOpen);
+    });
+  }
+
+  private updateLifts() {
+    this.lifts.forEach(lift => {
+      const active = this.isPlateActive(lift.plate);
+      if (active !== lift.powered) {
+        lift.powered = active;
+        lift.plate.setFillStyle(active ? 0xe0a85a : 0xb68247);
+        audio.play(active ? 'plate' : 'gate');
+      }
+      const body = lift.platform.body as Phaser.Physics.Arcade.Body;
+      const position = lift.axis === 'x' ? lift.platform.x : lift.platform.y;
+      if (active) {
+        if (position >= lift.to) lift.dir = -1;
+        if (position <= lift.from) lift.dir = 1;
+        const velocity = lift.speed * lift.dir;
+        if (lift.axis === 'x') body.setVelocityX(velocity); else body.setVelocityY(velocity);
+        return;
+      }
+      if (Math.abs(position - lift.from) < 4) {
+        if (lift.axis === 'x') { lift.platform.x = lift.from; body.setVelocityX(0); }
+        else { lift.platform.y = lift.from; body.setVelocityY(0); }
+      } else {
+        const back = position > lift.from ? -lift.speed * .8 : lift.speed * .8;
+        if (lift.axis === 'x') body.setVelocityX(back); else body.setVelocityY(back);
+      }
+    });
+  }
+
+  private updateMovers(delta: number) {
+    this.movers.forEach(mover => {
+      const body = mover.platform.body as Phaser.Physics.Arcade.Body;
+      const next = mover.platform.x + mover.dir * mover.speed * (delta / 1000);
+      if (next >= mover.x0 + mover.span) { mover.platform.x = mover.x0 + mover.span; mover.dir = -1; }
+      else if (next <= mover.x0) { mover.platform.x = mover.x0; mover.dir = 1; }
+      else mover.platform.x = next;
+      body.setVelocityX(mover.dir * mover.speed);
+    });
+  }
+
+  private updateCrushers(time: number) {
+    this.crushers.forEach(crusher => {
+      const t = ((time + crusher.phase) % crusher.period) / crusher.period;
+      let y = crusher.hangY;
+      if (t < .3) y = crusher.hangY;
+      else if (t < .4) {
+        const k = (t - .3) / .1;
+        y = crusher.hangY + (crusher.slamY - crusher.hangY) * k * k;
+      } else if (t < .5) y = crusher.slamY;
+      else {
+        const k = (t - .5) / .5;
+        y = crusher.slamY + (crusher.hangY - crusher.slamY) * (1 - Math.pow(1 - k, 2));
+      }
+      if (y >= crusher.slamY - 1 && crusher.head.y < crusher.slamY - 1) {
+        audio.play('slam');
+        this.dust.explode(6, crusher.x, crusher.slamY + 14);
+        this.cameras.main.shake(60, .0018);
+      }
+      crusher.head.y = y;
+      crusher.teeth.y = y + 14;
+      crusher.column.setDisplaySize(18, Math.max(0, y - 18));
+      const staticBody = crusher.head.body as Phaser.Physics.Arcade.StaticBody;
+      staticBody.updateFromGameObject();
+    });
+  }
+
+  private updatePendulums(time: number) {
+    this.pendulums.forEach(p => {
+      const theta = Math.sin(((time + p.phase) / p.period) * Math.PI * 2) * p.amplitude;
+      const bobX = p.x + Math.sin(theta) * p.length;
+      const bobY = p.pivotY + Math.cos(theta) * p.length;
+      p.bob.setPosition(bobX, bobY);
+      p.bob.setRotation(theta * .6);
+      (p.bob.body as Phaser.Physics.Arcade.StaticBody).updateFromGameObject();
+      p.chain.clear().lineStyle(2, 0xb68247, .55).lineBetween(p.x, p.pivotY, bobX, bobY);
+    });
+  }
+
+  private updateCrumbles(time: number) {
+    this.crumbles.forEach(crumble => {
+      if (crumble.state === 'shake') {
+        crumble.rect.x = crumble.baseX + Math.sin(time / 14) * 1.6;
+        if (time >= crumble.until) {
+          crumble.state = 'gone';
+          crumble.until = time + 2800;
+          crumble.rect.x = crumble.baseX;
+          (crumble.rect.body as Phaser.Physics.Arcade.StaticBody).enable = false;
+          this.tweens.add({ targets: crumble.rect, alpha: .12, y: crumble.rect.y + 120, duration: 500, ease: 'Quad.In' });
+          this.dust.explode(8, crumble.rect.x, crumble.rect.y);
+        }
+      } else if (crumble.state === 'gone' && time >= crumble.until) {
+        crumble.state = 'idle';
+        crumble.rect.y -= 120;
+        crumble.rect.setAlpha(1);
+        const staticBody = crumble.rect.body as Phaser.Physics.Arcade.StaticBody;
+        staticBody.enable = true;
+        staticBody.updateFromGameObject();
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Enemies
+  // ─────────────────────────────────────────────────────────────
+
+  private updateEnemies(time: number) {
+    this.groundEnemies.children.iterate(child => {
       const enemy = child as Phaser.Physics.Arcade.Sprite;
       if (!enemy.active) return true;
       const body = enemy.body as Phaser.Physics.Arcade.Body;
-      if (body.blocked.left) enemy.setVelocityX(70);
-      if (body.blocked.right) enemy.setVelocityX(-70);
-      enemy.setFlipX(body.velocity.x > 0);
+      if (enemy.y > HEIGHT + 160) { enemy.disableBody(true, true); return true; }
+      switch (enemy.getData('kind')) {
+        case 'crawler': this.updateCrawler(enemy, body); break;
+        case 'spitter': this.updateSpitter(enemy, body, time); break;
+        case 'charger': this.updateCharger(enemy, body, time); break;
+        case 'warden': this.updateWarden(enemy, body, time); break;
+      }
       return true;
     });
+    this.airEnemies.children.iterate(child => {
+      const enemy = child as Phaser.Physics.Arcade.Sprite;
+      if (!enemy.active) return true;
+      this.updateFlyer(enemy, enemy.body as Phaser.Physics.Arcade.Body, time);
+      return true;
+    });
+  }
+
+  private patrolFlip(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, speed: number) {
+    const minX = enemy.getData('minX') as number | undefined;
+    const maxX = enemy.getData('maxX') as number | undefined;
+    if (body.blocked.left) enemy.setData('dir', 1);
+    if (body.blocked.right) enemy.setData('dir', -1);
+    if (minX !== undefined && enemy.x <= minX) enemy.setData('dir', 1);
+    if (maxX !== undefined && enemy.x >= maxX) enemy.setData('dir', -1);
+    const dir = enemy.getData('dir') as number;
+    body.setVelocityX(dir * speed);
+    enemy.setFlipX(dir > 0);
+  }
+
+  private updateCrawler(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body) {
+    if (enemy.getData('dir') === undefined) enemy.setData('dir', body.velocity.x >= 0 ? 1 : -1);
+    this.patrolFlip(enemy, body, 70);
+  }
+
+  private updateSpitter(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
+    body.setVelocityX(0);
+    const nextShot = enemy.getData('nextShot') as number;
+    const target = this.nearestTarget(enemy.x, enemy.y - 10, 560, 260);
+    if (!target) {
+      if (enemy.scaleX !== 1) enemy.setScale(1);
+      enemy.setData('nextShot', Math.max(nextShot, time + 500));
+      return;
+    }
+    const windup = time >= nextShot - 260;
+    enemy.setScale(windup ? 1.14 : 1);
+    enemy.setFlipX(target.x < enemy.x);
+    if (time >= nextShot) {
+      enemy.setData('nextShot', time + 1750);
+      enemy.setScale(1);
+      this.fireProjectile(enemy, target);
+    }
+  }
+
+  private fireProjectile(enemy: Phaser.Physics.Arcade.Sprite, target: { x: number; y: number }) {
+    const orb = this.projectiles.create(enemy.x, enemy.y - 16, 'orb') as Phaser.Physics.Arcade.Image;
+    const dx = target.x - enemy.x;
+    const dy = target.y - enemy.y + 6;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    orb.setVelocity(dx / length * 265, dy / length * 265);
+    orb.setDepth(6).setData('born', this.time.now);
+    audio.play('shoot');
+  }
+
+  private updateProjectiles(time: number) {
+    this.projectiles.children.iterate(child => {
+      const orb = child as Phaser.Physics.Arcade.Image;
+      if (!orb.active) return true;
+      if (time - (orb.getData('born') as number) > 3200) { orb.destroy(); return true; }
+      orb.rotation += .12;
+      if (this.echoActive() && Phaser.Geom.Rectangle.Overlaps(orb.getBounds(), this.echo!.getBounds())) {
+        audio.play('chime');
+        this.sparkle.explode(5, orb.x, orb.y);
+        orb.destroy();
+      }
+      return true;
+    });
+  }
+
+  private updateCharger(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
+    const state = enemy.getData('state') as string;
+    if (state === 'patrol') {
+      this.patrolFlip(enemy, body, 90);
+      const target = this.nearestTarget(enemy.x, enemy.y, 360, 70);
+      if (target) {
+        enemy.setData('state', 'windup').setData('windupUntil', time + 350);
+        body.setVelocityX(0);
+      }
+    } else if (state === 'windup') {
+      body.setVelocityX(0);
+      enemy.setAlpha(Math.sin(time / 22) > 0 ? .65 : 1);
+      if (time >= (enemy.getData('windupUntil') as number)) {
+        const target = this.nearestTarget(enemy.x, enemy.y, 420, 80);
+        enemy.setAlpha(1);
+        enemy.setData('state', 'charge').setData('chargeUntil', time + 900);
+        enemy.setData('dir', target && target.x < enemy.x ? -1 : 1);
+      }
+    } else if (state === 'charge') {
+      this.patrolFlip(enemy, body, 340);
+      if (body.blocked.left || body.blocked.right) {
+        enemy.setData('state', 'dizzy').setData('dizzyUntil', time + 600);
+        audio.play('slam');
+        this.cameras.main.shake(70, .002);
+        this.dust.explode(5, enemy.x, enemy.y + 10);
+      } else if (time >= (enemy.getData('chargeUntil') as number)) {
+        enemy.setData('state', 'dizzy').setData('dizzyUntil', time + 500);
+      }
+    } else {
+      body.setVelocityX(body.velocity.x * .8);
+      if (time >= (enemy.getData('dizzyUntil') as number)) enemy.setData('state', 'patrol');
+    }
+  }
+
+  private updateWarden(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
+    const staggerUntil = (enemy.getData('staggerUntil') as number) ?? 0;
+    if (time < staggerUntil) {
+      body.setVelocityX(body.velocity.x * .88);
+      return;
+    }
+    const hp = enemy.getData('hp') as number;
+    const target = this.nearestTarget(enemy.x, enemy.y, 460, 130);
+    if (target) {
+      const dir = target.x < enemy.x ? -1 : 1;
+      enemy.setData('dir', dir);
+      body.setVelocityX(dir * (150 + (3 - hp) * 28));
+      enemy.setFlipX(dir > 0);
+    } else {
+      this.patrolFlip(enemy, body, 60);
+    }
+  }
+
+  private updateFlyer(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
+    const state = (enemy.getData('state') as string) ?? 'hover';
+    const anchorX = enemy.getData('anchorX') as number;
+    const anchorY = enemy.getData('anchorY') as number;
+    const phase = enemy.getData('phase') as number;
+    if (state === 'hover') {
+      body.setVelocityX(Phaser.Math.Clamp((anchorX - enemy.x) * 1.6, -60, 60));
+      body.setVelocityY(Math.sin(time / 300 + phase) * 38 + Phaser.Math.Clamp((anchorY - enemy.y) * 1.6, -40, 40));
+      const target = this.nearestTarget(enemy.x, enemy.y, 300);
+      if (target) {
+        const dx = target.x - enemy.x;
+        const dy = target.y - enemy.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        body.setVelocity(dx / length * 300, dy / length * 300);
+        enemy.setData('state', 'swoop').setData('swoopUntil', time + 700);
+        audio.play('shoot');
+      }
+    } else if (state === 'swoop') {
+      if (time >= (enemy.getData('swoopUntil') as number)) enemy.setData('state', 'return');
+    } else {
+      const dx = anchorX - enemy.x;
+      const dy = anchorY - enemy.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 14) {
+        enemy.setData('state', 'hover');
+        body.setVelocity(0, 0);
+      } else {
+        body.setVelocity(dx / dist * 170, dy / dist * 170);
+      }
+    }
+    enemy.setFlipX(body.velocity.x > 0);
   }
 
   private updateShards(time: number) {
@@ -465,132 +1454,9 @@ class GameScene extends Phaser.Scene {
     });
   }
 
-  private toggleRecording() {
-    if (!this.gameStarted || this.gameEnded || this.paused) return;
-    if (this.recording) { this.finishRecording(); return; }
-    this.playingEcho = false;
-    this.echo?.destroy();
-    this.echoFrames = [];
-    this.recording = true;
-    this.recordStarted = this.time.now;
-    audio.play('record');
-    this.player.setTint(0xe8bd7c);
-    ui.echo.textContent = 'RECORDING';
-    this.showMessage('Recording timeline. Press E to release the echo.', 1800);
-  }
-
-  private finishRecording() {
-    if (!this.recording || this.echoFrames.length < 2) return;
-    this.recording = false;
-    this.player.clearTint();
-    this.playingEcho = true;
-    this.playbackStarted = this.time.now;
-    const first = this.echoFrames[0];
-    this.echo = this.add.sprite(first.x, first.y, 'courier').setOrigin(.5, .90625).setScale(.42).setAlpha(.5).setTint(0x8dc9bd).setDepth(6).play('courier-idle');
-    audio.play('echo');
-    ui.echo.textContent = 'PLAYING';
-  }
-
-  private updateEcho(time: number) {
-    if (!this.playingEcho || !this.echo || this.echoFrames.length < 2) return;
-    const elapsed = time - this.playbackStarted;
-    const last = this.echoFrames[this.echoFrames.length - 1];
-    if (elapsed >= last.t) {
-      this.echo.setPosition(last.x, last.y);
-      this.playingEcho = false;
-      ui.echo.textContent = 'READY';
-      this.tweens.add({ targets: this.echo, alpha: 0, duration: 380, onComplete: () => this.echo?.destroy() });
-      return;
-    }
-    const sample = sampleEchoFrame(this.echoFrames, elapsed);
-    if (sample) {
-      const moving = Math.abs(sample.x - this.echo.x) > .35;
-      this.echo.setPosition(sample.x, sample.y).setFlipX(sample.flipX).play(moving ? 'courier-run' : 'courier-idle', true);
-    }
-  }
-
-  private updateGates() {
-    this.gates.forEach(gate => {
-      const plateStates = gate.plates.map(plate => this.isPlateActive(plate));
-      const activated = gate.requireAll ? plateStates.every(Boolean) : plateStates.some(Boolean);
-      const shouldOpen = gate.latchesOpen ? gate.open || activated : activated;
-      gate.plates.forEach((plate, index) => plate.setFillStyle(plateStates[index] ? 0xe0a85a : 0xb68247));
-
-      if (gate.closeDelayMs !== undefined) {
-        if (activated && !gate.open) this.setGateOpen(gate, true);
-        else if (!activated && gate.open) this.armGateClose(gate);
-        else if (activated && gate.closeTimer) this.disarmGateClose(gate);
-        return;
-      }
-
-      if (shouldOpen === gate.open) return;
-      this.setGateOpen(gate, shouldOpen);
-    });
-  }
-
-  private setGateOpen(gate: Gate, opening: boolean) {
-    if (gate.open === opening) return;
-    gate.open = opening;
-    audio.play(opening ? 'plate' : 'gate');
-    gate.bodies.forEach(barrier => {
-      const body = barrier.body.body as Phaser.Physics.Arcade.StaticBody;
-      body.enable = false;
-      this.tweens.killTweensOf(barrier.body);
-      this.tweens.add({
-        targets: barrier.body,
-        y: opening ? barrier.openY : barrier.closedY,
-        alpha: opening ? .2 : 1,
-        duration: opening ? 320 : 220,
-        ease: opening ? 'Cubic.Out' : 'Cubic.In',
-        onComplete: () => {
-          body.updateFromGameObject();
-          body.enable = !opening;
-        },
-      });
-    });
-  }
-
-  private armGateClose(gate: Gate) {
-    if (gate.closeTimer || gate.closeDelayMs === undefined) return;
-    audio.play('gate');
-    gate.closeTimer = this.time.delayedCall(gate.closeDelayMs, () => {
-      gate.closeTimer = undefined;
-      this.setGateOpen(gate, false);
-    });
-  }
-
-  private disarmGateClose(gate: Gate) {
-    if (!gate.closeTimer) return;
-    gate.closeTimer.remove(false);
-    gate.closeTimer = undefined;
-  }
-
-  private isPlateActive(plate: Phaser.GameObjects.Rectangle) {
-    const playerOn = Phaser.Geom.Rectangle.Overlaps(this.player.getBounds(), plate.getBounds());
-    const echoOn = !!this.echo?.active && Phaser.Geom.Rectangle.Overlaps(this.echo.getBounds(), plate.getBounds());
-    return playerOn || echoOn;
-  }
-
-  private updateLift() {
-    if (!this.lift) return;
-    const active = this.isPlateActive(this.lift.plate);
-    const body = this.lift.platform.body as Phaser.Physics.Arcade.Body;
-    if (active !== this.lift.powered) {
-      this.lift.powered = active;
-      this.lift.plate.setFillStyle(active ? 0xe0a85a : 0xb68247);
-      audio.play(active ? 'plate' : 'gate');
-    }
-    if (active) {
-      if (this.lift.platform.x >= this.lift.endX) this.lift.direction = -1;
-      if (this.lift.platform.x <= this.lift.startX) this.lift.direction = 1;
-      body.setVelocityX(140 * this.lift.direction);
-      return;
-    }
-    if (Math.abs(this.lift.platform.x - this.lift.startX) < 4) {
-      this.lift.platform.x = this.lift.startX;
-      body.setVelocityX(0);
-    } else body.setVelocityX(this.lift.platform.x > this.lift.startX ? -110 : 110);
-  }
+  // ─────────────────────────────────────────────────────────────
+  // State changes
+  // ─────────────────────────────────────────────────────────────
 
   private activateCheckpoint(relay: Phaser.GameObjects.Rectangle, respawnX: number) {
     if (this.checkpointX >= respawnX) return;
@@ -620,40 +1486,22 @@ class GameScene extends Phaser.Scene {
     this.player.setAcceleration(0).setVelocity(0, 0);
     this.player.play('courier-victory');
     audio.play('win');
-    ui.resultEyebrow.textContent = 'TIME CORE DELIVERED';
-    const rank = completionRank(this.shardsFound, this.runElapsedMs);
-    const previousBest = this.readBestTime();
-    const isBest = previousBest === undefined || this.runElapsedMs < previousBest;
-    if (isBest) this.writeBestTime(this.runElapsedMs);
-    const best = isBest ? this.runElapsedMs : previousBest;
-    ui.resultTitle.textContent = `Rank ${rank} — The city remembers.`;
-    ui.resultCopy.textContent = `Run ${formatRunTime(this.runElapsedMs, true)} · ${this.shardsFound}/${TOTAL_SHARDS} shards · Best ${formatRunTime(best ?? this.runElapsedMs, true)}${isBest ? ' · New record' : ''}`;
+    const level = this.level;
+    const rank = completionRank(this.shardsFound, this.totalShards, this.runElapsedMs, level.parMs);
+    const outcome = recordCompletion(this.progress, level.id, this.levelIndex, LEVELS.length, this.runElapsedMs, this.shardsFound);
+    this.progress = outcome.progress;
+    ui.resultEyebrow.textContent = `CHAPTER ${this.levelIndex + 1} · ${level.name.toUpperCase()}`;
+    const best = this.progress.best[level.id];
+    const nextExists = this.levelIndex + 1 < LEVELS.length;
+    ui.resultTitle.textContent = `Rank ${rank} — ${nextExists ? 'The next ward awaits.' : 'The city remembers.'}`;
+    ui.resultCopy.textContent = [
+      `Run ${formatRunTime(this.runElapsedMs, true)}`,
+      `${this.shardsFound}/${this.totalShards} shards`,
+      `Best ${formatRunTime(best?.ms ?? this.runElapsedMs, true)}${outcome.isBest ? ' · New record' : ''}`,
+      outcome.unlockedNext ? '· New chapter unlocked' : '',
+    ].filter(Boolean).join(' · ');
+    ui.next.classList.toggle('hidden', !nextExists);
     ui.result.classList.remove('hidden');
-  }
-
-  private readBestTime(): number | undefined {
-    try {
-      const value = window.localStorage.getItem('echofall-best-time');
-      if (!value) return undefined;
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private writeBestTime(milliseconds: number) {
-    try {
-      window.localStorage.setItem('echofall-best-time', String(Math.round(milliseconds)));
-    } catch {
-      // A completed run still works when browser storage is unavailable.
-    }
-  }
-
-  private hintOnce(id: string, text: string) {
-    if (this.lastHint === id) return;
-    this.lastHint = id;
-    this.showMessage(text, 3500);
   }
 
   private showMessage(text: string, duration: number) {
@@ -663,31 +1511,71 @@ class GameScene extends Phaser.Scene {
     this.messageTimer = this.time.delayedCall(duration, () => ui.message.classList.remove('visible'));
   }
 
+  private showLevelBanner() {
+    ui.bannerName.textContent = `LEVEL ${this.levelIndex + 1} — ${this.level.name.toUpperCase()}`;
+    ui.bannerSub.textContent = this.level.subtitle;
+    ui.banner.classList.remove('show');
+    void ui.banner.offsetWidth;
+    ui.banner.classList.add('show');
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Flow control
+  // ─────────────────────────────────────────────────────────────
+
   startGame() {
+    // Chips may have changed the selection after this scene loaded its copy.
+    this.progress = loadProgress(LEVELS.map(l => l.id));
+    this.launchLevel(this.progress.current);
+  }
+
+  launchLevel(index: number) {
     audio.start();
     this.hasEverStarted = true;
-    this.gameStarted = true;
+    this.levelIndex = Phaser.Math.Clamp(index, 0, LEVELS.length - 1);
+    this.progress.current = this.levelIndex;
+    saveProgress(this.progress);
     ui.start.classList.add('hidden');
-    this.scene.resume();
-  }
-
-  private togglePause() {
-    if (!this.gameStarted || this.gameEnded) return;
-    this.paused = !this.paused;
-    this.physics.world.isPaused = this.paused;
-    ui.pause.classList.toggle('hidden', !this.paused);
-  }
-
-  restart() {
-    ui.result.classList.add('hidden');
     ui.pause.classList.add('hidden');
+    ui.result.classList.add('hidden');
     ui.message.classList.remove('visible');
-    ui.shard.textContent = `0 / ${TOTAL_SHARDS}`;
-    ui.echo.textContent = 'READY';
-    ui.checkpoint.textContent = 'OFFLINE';
+    this.scene.resume();
     this.scene.restart();
   }
+
+  restartRun() {
+    if (!this.hasEverStarted) return;
+    ui.pause.classList.add('hidden');
+    ui.result.classList.add('hidden');
+    this.paused = false;
+    this.physics.world.isPaused = false;
+    this.scene.restart();
+  }
+
+  openMenu() {
+    if (!this.hasEverStarted) return;
+    this.paused = true;
+    this.physics.world.isPaused = true;
+    ui.pause.classList.add('hidden');
+    ui.result.classList.add('hidden');
+    ui.start.classList.remove('hidden');
+    renderChips(this.progress);
+  }
+
+  togglePause(force?: boolean) {
+    if (!this.gameStarted || this.gameEnded) return;
+    const next = force ?? !this.paused;
+    if (next === this.paused) return;
+    this.paused = next;
+    this.physics.world.isPaused = this.paused;
+    ui.pause.classList.toggle('hidden', !this.paused);
+    if (!next) ui.start.classList.add('hidden');
+  }
 }
+
+// ─────────────────────────────────────────────────────────────
+// Boot + DOM wiring
+// ─────────────────────────────────────────────────────────────
 
 const game = new Phaser.Game({
   type: Phaser.AUTO,
@@ -696,20 +1584,121 @@ const game = new Phaser.Game({
   parent: 'game',
   backgroundColor: '#182422',
   pixelArt: true,
+  roundPixels: true,
   audio: { noAudio: true },
   physics: { default: 'arcade', arcade: { gravity: { x: 0, y: 1050 }, debug: false } },
-  scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: GameScene,
 });
 
-if (import.meta.env.DEV) {
-  (window as typeof window & { __echofall?: Phaser.Game }).__echofall = game;
-}
+const scene = () => game.scene.getScene('game') as GameScene;
 
-document.querySelector('#start-button')!.addEventListener('click', () => (game.scene.getScene('game') as GameScene).startGame());
-document.querySelector('#restart-button')!.addEventListener('click', () => (game.scene.getScene('game') as GameScene).restart());
+const savedProgress = loadProgress(LEVELS.map(l => l.id));
+const isTouchDevice = window.matchMedia?.('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (isTouchDevice) document.body.classList.add('touch-ui');
+
+function renderChips(progress: PlayerProgress) {
+  ui.chips.innerHTML = '';
+  LEVELS.forEach((level, index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    const record = progress.best[level.id];
+    const locked = index > progress.unlocked;
+    chip.className = [
+      'chip',
+      index === progress.current ? 'active' : '',
+      locked ? 'locked' : '',
+      record ? 'done' : '',
+    ].filter(Boolean).join(' ');
+    chip.innerHTML = `
+      <span class="chip-index">${index + 1}</span>
+      <span class="chip-name">${level.name}</span>
+      <span class="chip-meta">${locked ? 'LOCKED' : record ? `${formatRunTime(record.ms)} · ${record.shards}/${level.shards.length}` : 'NEW'}</span>
+    `;
+    chip.addEventListener('click', () => {
+      if (locked) {
+        chip.classList.add('deny');
+        window.setTimeout(() => chip.classList.remove('deny'), 380);
+        return;
+      }
+      progress.current = index;
+      saveProgress(progress);
+      renderChips(progress);
+      if (document.body.classList.contains('in-run')) scene().launchLevel(index);
+    });
+    ui.chips.appendChild(chip);
+  });
+  ui.begin.textContent = progress.best[LEVELS[progress.current].id] ? `CONTINUE — ${LEVELS[progress.current].name.toUpperCase()}` : `BEGIN — ${LEVELS[progress.current].name.toUpperCase()}`;
+}
+renderChips(loadProgress(LEVELS.map(l => l.id)));
+
+// The scene loads the same persisted progress itself, so both stay in sync.
+
+ui.begin.addEventListener('click', () => {
+  document.body.classList.add('in-run');
+  scene().startGame();
+});
+document.querySelector('#resume-button')!.addEventListener('click', () => scene().togglePause(false));
+document.querySelector('#pause-restart-button')!.addEventListener('click', () => scene().restartRun());
+document.querySelector('#pause-menu-button')!.addEventListener('click', () => scene().openMenu());
+document.querySelector('#retry-button')!.addEventListener('click', () => scene().restartRun());
+document.querySelector('#result-menu-button')!.addEventListener('click', () => scene().openMenu());
+ui.next.addEventListener('click', () => scene().startGame());
+(document.querySelector('#pause-button') as HTMLButtonElement).addEventListener('click', () => scene().togglePause());
+
 ui.sound.addEventListener('click', () => {
   audio.start();
   const muted = audio.toggleMuted();
   ui.sound.textContent = muted ? 'AUDIO OFF' : 'AUDIO ON';
 });
+
+// Touch controls — pointer events with capture keep slides and multi-touch reliable.
+function bindHold(target: Element, down: () => void, up: () => void) {
+  const element = target as HTMLElement;
+  const active = new Set<number>();
+  element.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    element.setPointerCapture?.(event.pointerId);
+    if (active.has(event.pointerId)) return;
+    active.add(event.pointerId);
+    down();
+  });
+  const release = (event: PointerEvent) => {
+    if (!active.has(event.pointerId)) return;
+    active.delete(event.pointerId);
+    up();
+  };
+  element.addEventListener('pointerup', release);
+  element.addEventListener('pointercancel', release);
+  element.addEventListener('lostpointercapture', release);
+  element.addEventListener('contextmenu', event => event.preventDefault());
+}
+
+bindHold(document.querySelector('#tc-left')!, () => scene().setTouchDirection('left'), () => scene().setTouchDirection(touch.right ? 'right' : 'none'));
+bindHold(document.querySelector('#tc-right')!, () => scene().setTouchDirection('right'), () => scene().setTouchDirection(touch.left ? 'left' : 'none'));
+bindHold(document.querySelector('#tc-jump')!, () => { scene().setTouchJumpHeld(true); scene().queueJump(); }, () => scene().setTouchJumpHeld(false));
+bindHold(document.querySelector('#tc-echo')!, () => scene().toggleRecording(), () => undefined);
+// Pause automatically when the tab loses focus (mobile switching).
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) scene().togglePause(true);
+});
+
+// Orientation flips and iOS toolbar collapses occasionally need a scale nudge.
+window.addEventListener('orientationchange', () => {
+  window.setTimeout(() => game.scale.refresh(), 250);
+});
+
+// Fullscreen is a big win on phones; hide the button where unsupported.
+const fullscreenButton = document.querySelector<HTMLButtonElement>('#fullscreen-button');
+if (fullscreenButton && document.fullscreenEnabled) {
+  fullscreenButton.addEventListener('click', () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen().catch(() => undefined);
+  });
+} else if (fullscreenButton) {
+  fullscreenButton.classList.add('hidden');
+}
+
+if (import.meta.env.DEV) {
+  (window as typeof window & { __echofall?: Phaser.Game }).__echofall = game;
+}
