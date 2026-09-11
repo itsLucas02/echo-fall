@@ -144,7 +144,8 @@ class GameScene extends Phaser.Scene {
 
   private dust!: Phaser.GameObjects.Particles.ParticleEmitter;
   private sparkle!: Phaser.GameObjects.Particles.ParticleEmitter;
-  private shurikens!: Phaser.Physics.Arcade.Group;
+  private shurikenGroup!: Phaser.Physics.Arcade.Group;
+  private shurikens: Phaser.Physics.Arcade.Image[] = [];
   private lastThrowAt = Number.NEGATIVE_INFINITY;
 
   private totalShards = 0;
@@ -170,9 +171,10 @@ class GameScene extends Phaser.Scene {
 
   preload() {
     this.load.image('courier-source', 'assets/kite-sprite-source.png');
-    this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
-    this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
-    this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
+    this.load.image('level-arrival', 'assets/level-arrival.png');
+    this.load.image('level-caverns', 'assets/level-caverns.png');
+    this.load.image('level-terraces', 'assets/level-terraces.png');
+    this.load.image('level-ascent', 'assets/level-ascent.png');
   }
 
   create() {
@@ -194,6 +196,7 @@ class GameScene extends Phaser.Scene {
     this.recording = false;
     this.playingEcho = false;
     this.lastThrowAt = Number.NEGATIVE_INFINITY;
+    this.shurikens = [];
     this.totalShards = this.level.shards.length;
     this.shardsFound = 0;
     this.checkpointX = 140;
@@ -391,24 +394,21 @@ class GameScene extends Phaser.Scene {
 
   private drawWorld() {
     const palette = this.level.palette;
-    this.buildSkyGradient();
-    this.add.image(0, 0, `sky-${this.level.id}`).setOrigin(0).setScrollFactor(0).setDisplaySize(WIDTH, HEIGHT).setDepth(-40);
-    this.cameras.main.setBackgroundColor(`#${palette.skyBottom.toString(16).padStart(6, '0')}`);
-    const imageScale = HEIGHT / 724;
-    const layerWidth = 2172 * imageScale;
-    const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
-      const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
-        .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
-      if (palette.tint !== 0xffffff) images.forEach(image => image.setTint(palette.tint));
-      this.parallaxLayers.push({ images, width: layerWidth, rate });
-    };
-    this.parallaxLayers = [];
-    addLayer('malaysia-skyline', .08, -30);
-    addLayer('malaysia-midground', .24, -20, .88);
-    this.buildSilhouette();
-    addLayer(`sil-${this.level.id}`, .33, -8, .8);
-    addLayer('malaysia-foreground', .46, .5, .82);
-    this.addAmbientParticles();
+    this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
+
+    // Hand-generated per-chapter backdrop art, cover-fit and slowly parallaxed.
+    const textureKey = `level-${this.level.id}`;
+    const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
+    const coverScale = Math.max(HEIGHT / source.height, WIDTH / source.width) * 1.05;
+    const layerWidth = source.width * coverScale;
+    const images = [0, layerWidth].map(x => this.add.image(x, 0, textureKey)
+      .setOrigin(0).setScrollFactor(0).setScale(coverScale).setDepth(-30));
+    this.parallaxLayers = [{ images, width: layerWidth, rate: .12 }];
+
+    // Gentle bottom shade so geometry sits into the scene.
+    const shade = this.add.graphics().setScrollFactor(0).setDepth(-20);
+    shade.fillGradientStyle(0x000000, 0x000000, palette.abyss, palette.abyss, 0, 0, .34, .6);
+    shade.fillRect(0, Math.round(HEIGHT * .42), WIDTH, Math.ceil(HEIGHT * .58));
 
     const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
     const viewportRight = Math.max(WIDTH, this.scale.width);
@@ -423,141 +423,6 @@ class GameScene extends Phaser.Scene {
       abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, GROUND_Y + 17, x, GROUND_Y + 17 + depth);
       abyss.fillStyle(0xd6a45d, .38).fillCircle(x, GROUND_Y + 19 + depth, 1.5);
     }
-  }
-
-  /** Soft vertical gradient unique to each chapter. */
-  private buildSkyGradient() {
-    const key = `sky-${this.level.id}`;
-    if (this.textures.exists(key)) return;
-    const palette = this.level.palette;
-    const canvasTexture = this.textures.createCanvas(key, 4, 512)!;
-    const ctx = canvasTexture.context;
-    const gradient = ctx.createLinearGradient(0, 0, 0, 512);
-    const top = Phaser.Display.Color.IntegerToColor(palette.skyTop);
-    const bottom = Phaser.Display.Color.IntegerToColor(palette.skyBottom);
-    gradient.addColorStop(0, top.rgba);
-    gradient.addColorStop(.62, bottom.rgba);
-    gradient.addColorStop(1, `#${palette.sky.toString(16).padStart(6, '0')}`);
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 4, 512);
-    canvasTexture.refresh();
-  }
-
-  /**
-   * A procedural silhouette skyline so every chapter reads as a different
-   * place: jungle arches, stalactites, tea hills, or the twin towers.
-   */
-  private buildSilhouette() {
-    const key = `sil-${this.level.id}`;
-    if (this.textures.exists(key)) return;
-    const width = 1024;
-    const height = 540;
-    const g = this.add.graphics();
-    const random = new Phaser.Math.RandomDataGenerator([this.level.id]);
-    const id = this.level.id;
-
-    if (id === 'arrival') {
-      g.fillStyle(0x224034, 1);
-      for (let x = 30; x < width; x += 210 + Math.floor(random.frac() * 90)) {
-        const postHeight = 200 + random.frac() * 120;
-        g.fillRect(x, height - postHeight, 26, postHeight);
-        g.fillRect(x + 118, height - postHeight, 26, postHeight);
-        g.fillRect(x - 10, height - postHeight - 18, 190, 20);
-        g.fillRect(x + 74, height - postHeight - 34, 22, 18);
-      }
-      g.fillStyle(0x1b3529, 1);
-      for (let x = 120; x < width; x += 260 + Math.floor(random.frac() * 160)) {
-        const trunkHeight = 120 + random.frac() * 90;
-        g.fillRect(x, height - trunkHeight, 10, trunkHeight);
-        for (let frond = 0; frond < 5; frond += 1) {
-          const angle = -Math.PI + (frond / 4) * Math.PI;
-          g.fillPoints([
-            { x: x + 5, y: height - trunkHeight },
-            { x: x + 5 + Math.cos(angle) * 52, y: height - trunkHeight + Math.sin(angle) * 30 - 12 },
-            { x: x + 5 + Math.cos(angle) * 62, y: height - trunkHeight + Math.sin(angle) * 30 + 2 },
-          ], true);
-        }
-      }
-    } else if (id === 'caverns') {
-      g.fillStyle(0x0c1822, 1);
-      for (let x = 0; x < width; x += 40) {
-        const length = 60 + random.frac() * 190;
-        g.fillTriangle(x - 6, 0, x + 46, 0, x + 20, length);
-      }
-      for (let x = 20; x < width; x += 130) {
-        const mound = 50 + random.frac() * 110;
-        g.fillTriangle(x, height, x + 210, height, x + 105, height - mound);
-      }
-      g.fillStyle(0x11222e, .8);
-      for (let x = 0; x < width; x += 90) {
-        g.fillTriangle(x, 0, x + 60, 0, x + 30, 40 + random.frac() * 90);
-      }
-    } else if (id === 'terraces') {
-      g.fillStyle(0x2e5138, 1);
-      for (let band = 0; band < 3; band += 1) {
-        const baseY = 240 + band * 96;
-        g.beginPath();
-        g.moveTo(0, height);
-        for (let x = 0; x <= width; x += 32) {
-          g.lineTo(x, baseY + Math.sin((x / width) * Math.PI * (2 + band) + band * 2.2) * (34 - band * 8));
-        }
-        g.lineTo(width, height);
-        g.closePath();
-        g.fillPath();
-      }
-      g.fillStyle(0x3c6644, 1);
-      for (let row = 0; row < 3; row += 1) {
-        const y = 300 + row * 84;
-        for (let x = 20 + (row % 2) * 26; x < width; x += 52) {
-          g.fillEllipse(x, y + Math.sin(x / 140 + row) * 18, 26, 12);
-        }
-      }
-    } else {
-      g.fillStyle(0x241d3e, 1);
-      for (let x = 10; x < width; x += 86) {
-        const blockHeight = 90 + random.frac() * 180;
-        g.fillRect(x, height - blockHeight, 54 + random.frac() * 26, blockHeight);
-      }
-      g.fillStyle(0x2f2650, 1);
-      [[190, 470], [300, 430]].forEach(([x, towerHeight]) => {
-        g.fillRect(x, height - towerHeight, 44, towerHeight);
-        g.fillTriangle(x - 4, height - towerHeight, x + 48, height - towerHeight, x + 22, height - towerHeight - 64);
-        g.fillRect(x + 16, height - towerHeight - 96, 12, 40);
-      });
-      g.fillRect(196, height - 250, 142, 10);
-      g.fillStyle(0x1c1630, 1);
-      for (let x = 480; x < width; x += 74) {
-        const blockHeight = 70 + random.frac() * 200;
-        g.fillRect(x, height - blockHeight, 40 + random.frac() * 30, blockHeight);
-      }
-      g.lineStyle(4, 0x1c1630, 1);
-      [[560, 240], [820, 300]].forEach(([x, armY]) => {
-        g.lineBetween(x, height, x, height - armY);
-        g.lineBetween(x - 90, height - armY, x + 70, height - armY);
-        g.lineBetween(x, height - armY, x - 60, height - armY + 26);
-      });
-    }
-
-    g.generateTexture(key, width, height);
-    g.destroy();
-  }
-
-  /** Gentle ambient particles: leaves, cave motes, pollen, dusk embers. */
-  private addAmbientParticles() {
-    const id = this.level.id;
-    const config = id === 'caverns'
-      ? { tint: 0x9fd8c8, speedY: { min: -14, max: -4 }, speedX: { min: -8, max: 8 }, frequency: 420, scale: { start: .8, end: .1 }, alpha: { start: .5, end: 0 }, lifespan: 5200 }
-      : id === 'terraces'
-        ? { tint: 0xf1e3a9, speedY: { min: -6, max: 10 }, speedX: { min: 16, max: 46 }, frequency: 360, scale: { start: .9, end: .2 }, alpha: { start: .45, end: 0 }, lifespan: 4600 }
-        : id === 'ascent'
-          ? { tint: 0xe0a85a, speedY: { min: -26, max: -8 }, speedX: { min: -6, max: 6 }, frequency: 380, scale: { start: .8, end: .1 }, alpha: { start: .6, end: 0 }, lifespan: 4200 }
-          : { tint: 0x9fd08a, speedY: { min: 12, max: 34 }, speedX: { min: -30, max: -8 }, frequency: 420, scale: { start: 1.1, end: .3 }, alpha: { start: .5, end: 0 }, lifespan: 4600 };
-    this.add.particles(0, 0, 'p-dot', {
-      x: { min: 0, max: WIDTH },
-      emitZone: { type: 'random', source: new Phaser.Geom.Rectangle(0, id === 'caverns' ? 120 : 60, WIDTH, id === 'caverns' ? 380 : 260) },
-      quantity: 1,
-      ...config,
-    } as Phaser.Types.GameObjects.Particles.ParticleEmitterConfig).setScrollFactor(0).setDepth(11);
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
@@ -837,7 +702,7 @@ class GameScene extends Phaser.Scene {
       }
     });
     this.projectiles = this.physics.add.group({ allowGravity: false });
-    this.shurikens = this.physics.add.group({ allowGravity: false, maxSize: 4 });
+    this.shurikenGroup = this.physics.add.group({ allowGravity: false, maxSize: 16 });
   }
 
   private createShards() {
@@ -908,24 +773,33 @@ class GameScene extends Phaser.Scene {
     if (!this.gameStarted || this.gameEnded || this.paused) return;
     const now = this.time.now;
     if (!cooldownReady(this.lastThrowAt, now, 520)) return;
-    if (this.shurikens.countActive(true) >= 3) return;
-    this.lastThrowAt = now;
+    if (this.shurikens.length >= 3) return;
     const facing = this.player.flipX ? -1 : 1;
-    const star = this.shurikens.create(this.player.x + facing * 26, this.player.y - 42, 'shuriken') as Phaser.Physics.Arcade.Image;
+    const star = this.shurikenGroup.create(this.player.x + facing * 26, this.player.y - 42, 'shuriken') as Phaser.Physics.Arcade.Image | null;
+    if (!star) return;
+    this.lastThrowAt = now;
     star.setVelocity(facing * 540, 0).setDepth(7).setData('bornAt', now);
     (star.body as Phaser.Physics.Arcade.Body).setSize(12, 12);
+    this.shurikens.push(star);
     audio.play('throw');
     this.tweens.add({ targets: this.player, scaleX: .38, duration: 60, yoyo: true });
   }
 
+  /** The ONLY way a shuriken leaves the world — destroy + forget, never disable. */
+  private destroyShuriken(star: Phaser.Physics.Arcade.Image) {
+    const index = this.shurikens.indexOf(star);
+    if (index >= 0) this.shurikens.splice(index, 1);
+    if (star.active) star.destroy();
+  }
+
   private updateShurikens(time: number) {
-    this.shurikens.children.iterate(child => {
-      const star = child as Phaser.Physics.Arcade.Image;
-      if (!star.active) return true;
+    for (let i = this.shurikens.length - 1; i >= 0; i -= 1) {
+      const star = this.shurikens[i];
       star.rotation += .5;
-      if (time - (star.getData('bornAt') as number) > 1400 || Math.abs(star.x - this.player.x) > 640) star.destroy();
-      return true;
-    });
+      if (time - (star.getData('bornAt') as number) > 1400 || Math.abs(star.x - this.player.x) > 640) {
+        this.destroyShuriken(star);
+      }
+    }
   }
 
   private onShurikenHitEnemy(star: Phaser.Physics.Arcade.Image, enemyObject: Phaser.Physics.Arcade.Sprite) {
@@ -934,7 +808,7 @@ class GameScene extends Phaser.Scene {
     const hitX = star.x;
     const hitY = star.y;
     const at = this.spatial(hitX);
-    star.destroy();
+    this.destroyShuriken(star);
     this.sparkle.explode(6, hitX, hitY);
     if (enemy.getData('kind') === 'warden') {
       this.hitWarden(enemy, hitX); // the warden's armour rings out inside hitWarden
@@ -973,15 +847,15 @@ class GameScene extends Phaser.Scene {
       this.popProjectile(orb as Phaser.Physics.Arcade.Image);
       this.hurtPlayer();
     });
-    this.physics.add.collider(this.shurikens, this.platforms, (star) => {
+    this.physics.add.collider(this.shurikenGroup, this.platforms, (star) => {
       const shuriken = star as Phaser.Physics.Arcade.Image;
       if (!shuriken.active) return;
       audio.play('clang', this.spatial(shuriken.x));
       this.dust.explode(3, shuriken.x, shuriken.y);
-      shuriken.destroy();
+      this.destroyShuriken(shuriken);
     });
-    this.physics.add.overlap(this.shurikens, this.groundEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
-    this.physics.add.overlap(this.shurikens, this.airEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
+    this.physics.add.overlap(this.shurikenGroup, this.groundEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
+    this.physics.add.overlap(this.shurikenGroup, this.airEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
   }
 
   private onPlayerEnemy(playerObject: Phaser.Physics.Arcade.Sprite, enemyObject: Phaser.Physics.Arcade.Sprite) {

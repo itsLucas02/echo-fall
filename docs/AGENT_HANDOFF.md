@@ -79,7 +79,7 @@ Every level carries a `hints` list. Hints fire by **proximity** (|player.x − a
 
 ### Per-chapter presentation
 
-Each level draws its own sky gradient (`sky-<id>` canvas texture), a procedural silhouette layer (`sil-<id>`: jungle arches and palms, cave stalactites, rolling tea hills, or a dusk KL skyline with twin towers and cranes), and its own ambient particles (drifting leaves, cave motes, pollen, rising embers). Palettes tint the photographic parallax differently per chapter. The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles.
+Each level uses a dedicated generated backdrop painting, `public/assets/level-<id>.png` (arrival clockwork jungle city, Batu-style crystal caverns, Cameron tea hills, dusk KL twin towers). `drawWorld()` cover-fits it, wraps two copies for slow parallax (rate 0.12), and adds a bottom shade so geometry sits into the scene. The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles. Wind gust zones keep their drifting leaf particles because they communicate gameplay.
 
 ### Positional audio
 
