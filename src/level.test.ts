@@ -36,6 +36,14 @@ describe('level blueprints', () => {
     });
   });
 
+  it('teaches every chapter with proximity hints', () => {
+    LEVELS.forEach(level => {
+      expect(level.hints?.length, `${level.id}`).toBeGreaterThanOrEqual(4);
+      const texts = (level.hints ?? []).map(hint => hint.text).join('\n');
+      expect(texts, `${level.id} should explain the echo`).toMatch(/echo/i);
+    });
+  });
+
   it('respawns every checkpoint onto solid ground (respawn = checkpoint x − 30)', () => {
     LEVELS.forEach(level => {
       const overFloor = (x: number) => level.floorSegments.some(([center, width]) =>

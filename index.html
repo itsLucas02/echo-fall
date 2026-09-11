@@ -30,11 +30,19 @@
         <div class="scanlines" aria-hidden="true"></div>
         <div id="level-banner" class="level-banner"><b id="level-banner-name"></b><span id="level-banner-sub"></span></div>
         <section id="start-screen" class="overlay overlay-start">
+          <div class="menu-glow" aria-hidden="true"></div>
           <div class="title-lockup">
-            <p class="eyebrow">A CLOCKWORK PLATFORMER</p>
+            <p class="eyebrow">A MALAYSIAN CLOCKWORK PLATFORMER</p>
             <h1>ECHO<span>FALL</span></h1>
-            <p>Carry the last time core through a Malaysia that forgot how to move. Record your run, release the echo, and let your past self hold the doors.</p>
+            <p class="tagline">Carry the last time core through a Malaysia that forgot how to move. <b>Record your run, release the echo</b> — your past self holds the plates, wakes the crystals, and fools the hunters.</p>
+            <div class="feature-row" aria-hidden="true">
+              <span class="feature">ECHO PUZZLES</span>
+              <span class="feature">4 CHAPTERS</span>
+              <span class="feature">SHURIKEN</span>
+              <span class="feature">TOUCH READY</span>
+            </div>
             <button id="start-button" type="button">BEGIN THE RUN</button>
+            <p class="save-note">Progress, best times, and shards save on this device.</p>
           </div>
           <div class="side-panel">
             <div class="level-panel">
@@ -45,12 +53,14 @@
               <p>MOVE <kbd>A</kbd><kbd>D</kbd> or <kbd>←</kbd><kbd>→</kbd></p>
               <p>JUMP <kbd>SPACE</kbd></p>
               <p>RECORD / RELEASE ECHO <kbd>E</kbd></p>
+              <p>THROW SHURIKEN <kbd>F</kbd> or <kbd>X</kbd></p>
               <p>PAUSE <kbd>ESC</kbd></p>
             </div>
             <div class="controls-panel touch-panel touch-only">
               <p>MOVE <span>◀ ▶ pads</span></p>
               <p>JUMP <span>JUMP button</span></p>
               <p>ECHO <span>ECHO button</span></p>
+              <p>SHURIKEN <span>★ button</span></p>
               <p>PAUSE <span>II button</span></p>
             </div>
           </div>
@@ -80,6 +90,7 @@
             <button id="tc-right" class="tc-btn" type="button" aria-label="Move right">▶</button>
           </div>
           <div class="tc-cluster tc-act">
+            <button id="tc-star" class="tc-btn tc-star" type="button" aria-label="Throw shuriken">★</button>
             <button id="tc-echo" class="tc-btn tc-echo" type="button" aria-label="Record or release echo">ECHO</button>
             <button id="tc-jump" class="tc-btn tc-jump" type="button" aria-label="Jump">JUMP</button>
           </div>
@@ -90,10 +101,12 @@
         <span class="kb-only">WASD / ARROWS TO MOVE</span>
         <span class="kb-only">SPACE TO JUMP</span>
         <span class="kb-only">E TO RECORD TIME</span>
+        <span class="kb-only">F / X FOR SHURIKEN</span>
         <span class="kb-only">R TO RESTART</span>
         <span class="touch-only">◀ ▶ TO MOVE</span>
         <span class="touch-only">JUMP TO LEAP</span>
         <span class="touch-only">ECHO TO RECORD</span>
+        <span class="touch-only">★ TO THROW</span>
       </footer>
     </main>
     <script type="module" src="/src/main.ts"></script>

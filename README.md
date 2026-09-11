@@ -6,10 +6,13 @@ An original Malaysian-themed 2D platformer built with Phaser, TypeScript, and Vi
 
 - **Four chapters** — Arrival Gate, Batu Caverns, Tea Terraces, and the Merdeka Ascent, each with its own palette, devices, and fauna.
 - **Time Echo** — record up to 7 seconds of movement, release the replay, and use it to hold plates, trigger echo-only resonators, power lifts, absorb spitter shots, and lure hunters.
-- **Puzzle devices** — hold plates, timed shutters, decaying relay chains, sequence locks, echo resonators, warden guard gates, and plate-powered horizontal/vertical lifts.
+- **Puzzle devices** — hold plates, timed shutters, decaying relay chains, sequence locks, echo resonators, warden guard gates, and plate-powered horizontal/vertical lifts — all explained in-world by proximity hints.
+- **Shuriken** — throw with `F`/`X`/★ to clip kites, creepers, boars, and (three hits) the warden.
 - **Obstacles** — spike beds, slam crushers, pendulum bombs, collapsing planks, spring mushrooms, drifting platforms, and highland wind zones.
 - **Five enemies** — crawlers, kite flyers, pitcher-plant spitters, charger boars, and the three-stomp Warden mini-boss. Flyers, chargers, wardens, and spitters all hunt the nearest automaton — the echo counts.
-- **Mobile-first** — on-screen touch controls, FIT scaling for any screen, fullscreen support, safe-area padding, and automatic pause on tab switch. Keyboard play still works everywhere.
+- **Four distinct scenes** — every chapter has its own sky gradient, procedural silhouette (jungle arches, stalactites, tea hills, dusk twin towers), ambient particles, tinted parallax, and ambient soundscape.
+- **Positional audio** — sounds fade and pan with distance; a compressor-softened synth palette plus per-chapter ambience (cave drips, highland birds) replaces the old 8-bit blips.
+- **Mobile-first** — on-screen touch controls (move, jump, echo, star, pause, fullscreen), FIT scaling for any screen, safe-area padding, and automatic pause on tab switch. Keyboard play still works everywhere.
 
 ## Run Locally
 

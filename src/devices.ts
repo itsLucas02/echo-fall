@@ -62,3 +62,8 @@ export function flipToggle(on: boolean): boolean {
 export function echoSwitchGateOpen(states: readonly boolean[]): boolean {
   return states.length > 0 && states.every(Boolean);
 }
+
+/** Shurikens (and other cooldown actions) fire only when the cooldown has elapsed. */
+export function cooldownReady(lastUsedAt: number, now: number, cooldownMs: number): boolean {
+  return now - lastUsedAt >= cooldownMs;
+}

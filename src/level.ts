@@ -81,7 +81,12 @@ export interface HintSpec {
 }
 
 export interface LevelPalette {
+  /** Accent used for the chapter card in the menu. */
   sky: number;
+  /** Vertical sky gradient stops (drawn behind the parallax). */
+  skyTop: number;
+  skyBottom: number;
+  /** Tint applied to the photographic parallax layers. */
   tint: number;
   platform: number;
   stroke: number;

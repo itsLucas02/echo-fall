@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   advanceSequence,
+  cooldownReady,
   echoSwitchGateOpen,
   emptyRelayState,
   flipToggle,
@@ -81,6 +82,14 @@ describe('sequence locks', () => {
     expect(sequenceLampLabel([2, 0, 1], 2)).toBe(1);
     expect(sequenceLampLabel([2, 0, 1], 0)).toBe(2);
     expect(sequenceLampLabel([2, 0, 1], 1)).toBe(3);
+  });
+});
+
+describe('shuriken cooldown', () => {
+  it('blocks throws inside the cooldown and allows them after', () => {
+    expect(cooldownReady(1000, 1300, 520)).toBe(false);
+    expect(cooldownReady(1000, 1520, 520)).toBe(true);
+    expect(cooldownReady(-Infinity, 0, 520)).toBe(true);
   });
 });
 

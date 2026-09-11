@@ -29,6 +29,7 @@ npm run preview  # serve the production build locally
 | Move | `A`/`D` or Left/Right | ◀ / ▶ pads (bottom-left) |
 | Jump | `Space`, `W`, or Up | JUMP button (bottom-right) |
 | Record/release echo | `E` | ECHO button |
+| Throw shuriken | `F` or `X` | ★ STAR button |
 | Pause | `Escape` | `II` button in the topbar |
 | Restart | `R` | Pause overlay → RESTART CHAPTER |
 | Fullscreen | — | `⛶` button (where supported) |
@@ -50,10 +51,16 @@ Horizontal acceleration, ground friction, max speed 300, single variable-height 
 - Smart enemies (flyer, charger, warden, spitter) target the nearest of player/echo — the echo is a decoy.
 - Spitter projectiles are absorbed by the echo.
 
+### Shuriken
+
+`F`/`X`/★ throws a steel star in the facing direction (520 ms cooldown, 3 in flight). It kills crawlers, flyers, spitters, and chargers outright and deals 1 damage to the warden (3 to fell it). Stars shatter on platforms with a metallic clang. `cooldownReady()` in `src/devices.ts` is the tested rule.
+
 ### Puzzle devices (`DeviceSpec` in `src/level.ts`)
 
 - `hold` — gates open while plate(s) are pressed; optional `requireAll` + `latch` + `closeDelayMs` (dual-lock vault).
 - `timed` — pressing the plate opens shutters for `openMs`; barrier blinks when about to close.
+
+Crusher feedback is proximity-based: the slam sound, camera micro-shake, dust, and shock-ring only fire within range, and the head trembles as a telegraph before dropping.
 - `relay` — each touch charges a plate for `holdMs`; gate opens only while ALL plates are charged at once. Charge bars show decay.
 - `sequence` — plates must be touched in `order`; numbered lamps show 1·2·3; a wrong press resets (with a buzz).
 - `echoSwitch` — echo-only crystal resonators; each echo crossing toggles; its gate opens while all crystals are on.
@@ -65,6 +72,18 @@ Pure device rules live in `src/devices.ts` and are unit-tested.
 ### Obstacles
 
 Spikes; **crushers** (period-slamming columns; solid to ride, deadly when crushed); **pendulums** (swinging spike balls, damage overlap); **crumble platforms** (shake 460 ms, fall, respawn after 2.8 s); **bouncers** (spring mushrooms, −760 vy); **movers** (patrolling platforms); **wind zones** (horizontal force added to player acceleration, drifting leaf particles).
+
+### Teaching the player
+
+Every level carries a `hints` list. Hints fire by **proximity** (|player.x − atX| ≤ 240), not by progress, and explain each device in plain words before the player reaches it. The sequence lock additionally highlights the NEXT expected plate in pale gold and flashes its lamps red on a wrong step; echo resonators shimmer and play a dull thud when the living player touches them ("the crystal ignores the living").
+
+### Per-chapter presentation
+
+Each level draws its own sky gradient (`sky-<id>` canvas texture), a procedural silhouette layer (`sil-<id>`: jungle arches and palms, cave stalactites, rolling tea hills, or a dusk KL skyline with twin towers and cranes), and its own ambient particles (drifting leaves, cave motes, pollen, rising embers). Palettes tint the photographic parallax differently per chapter. The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles.
+
+### Positional audio
+
+`AudioDirector.play(cue, { volume, pan })` accepts distance-attenuated volume and stereo pan; the scene computes both with `spatial(x)` (inaudible beyond ~900 px). Everything in the world — gates, plates, crushers, enemies, resonators, bounce mushrooms, crumbling planks — plays through it, so distant action stays quiet and panned. A looping wind bed (`AudioDirector.wind(level)`) rises inside gust zones. All cues are layered synthesis (sub thumps, band-passed whooshes, detuned metals) through a master compressor.
 
 ### Enemies (`EnemySpec` in `src/level.ts`)
 

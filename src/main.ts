@@ -4,6 +4,7 @@ import { sampleEchoFrame, type EchoFrame } from './echo';
 import { completionRank, formatRunTime, loadProgress, recordCompletion, saveProgress, type PlayerProgress } from './progress';
 import {
   advanceSequence,
+  cooldownReady,
   echoSwitchGateOpen,
   emptyRelayState,
   holdGateOpen,
@@ -45,6 +46,7 @@ interface SequenceGate extends GateCore {
   order: number[];
   progress: number;
   prev: boolean[];
+  flashUntil: number;
 }
 interface EchoGate extends GateCore {
   pads: Phaser.GameObjects.Rectangle[];
@@ -142,6 +144,8 @@ class GameScene extends Phaser.Scene {
 
   private dust!: Phaser.GameObjects.Particles.ParticleEmitter;
   private sparkle!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private shurikens!: Phaser.Physics.Arcade.Group;
+  private lastThrowAt = Number.NEGATIVE_INFINITY;
 
   private totalShards = 0;
   private shardsFound = 0;
@@ -189,6 +193,7 @@ class GameScene extends Phaser.Scene {
     this.echoFrames = [];
     this.recording = false;
     this.playingEcho = false;
+    this.lastThrowAt = Number.NEGATIVE_INFINITY;
     this.totalShards = this.level.shards.length;
     this.shardsFound = 0;
     this.checkpointX = 140;
@@ -205,6 +210,9 @@ class GameScene extends Phaser.Scene {
     this.wasGrounded = false;
     this.lastStepAt = 0;
     this.physics.world.isPaused = false;
+    audio.setAmbience(
+      this.level.id === 'caverns' ? 'cave' : this.level.id === 'terraces' ? 'highland' : this.level.id === 'ascent' ? 'dusk' : 'city',
+    );
     this.physics.world.setBoundsCollision(true, true, true, false);
     this.physics.world.setBounds(0, 0, this.level.worldWidth, HEIGHT);
     this.cameras.main.setBounds(0, 0, this.level.worldWidth, HEIGHT);
@@ -309,6 +317,15 @@ class GameScene extends Phaser.Scene {
     g.fillStyle(0xb8e08a).fillCircle(5, 5, 2.5);
     g.generateTexture('orb', 10, 10).clear();
 
+    // courier shuriken — four-point star
+    g.fillStyle(0xc9d4cf).fillPoints([
+      { x: 8, y: 0 }, { x: 10.5, y: 5.5 }, { x: 16, y: 8 }, { x: 10.5, y: 10.5 },
+      { x: 8, y: 16 }, { x: 5.5, y: 10.5 }, { x: 0, y: 8 }, { x: 5.5, y: 5.5 },
+    ], true);
+    g.fillStyle(0xe0a85a).fillCircle(8, 8, 2.2);
+    g.fillStyle(0x8b968f).fillCircle(8, 8, 1);
+    g.generateTexture('shuriken', 16, 16).clear();
+
     // pendulum bob
     g.fillStyle(0x3a4a46).fillCircle(12, 12, 9);
     g.lineStyle(2, 0xb68247).strokeCircle(12, 12, 9);
@@ -374,7 +391,9 @@ class GameScene extends Phaser.Scene {
 
   private drawWorld() {
     const palette = this.level.palette;
-    this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
+    this.buildSkyGradient();
+    this.add.image(0, 0, `sky-${this.level.id}`).setOrigin(0).setScrollFactor(0).setDisplaySize(WIDTH, HEIGHT).setDepth(-40);
+    this.cameras.main.setBackgroundColor(`#${palette.skyBottom.toString(16).padStart(6, '0')}`);
     const imageScale = HEIGHT / 724;
     const layerWidth = 2172 * imageScale;
     const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
@@ -386,20 +405,159 @@ class GameScene extends Phaser.Scene {
     this.parallaxLayers = [];
     addLayer('malaysia-skyline', .08, -30);
     addLayer('malaysia-midground', .24, -20, .88);
+    this.buildSilhouette();
+    addLayer(`sil-${this.level.id}`, .33, -8, .8);
     addLayer('malaysia-foreground', .46, .5, .82);
+    this.addAmbientParticles();
 
     const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
     const viewportRight = Math.max(WIDTH, this.scale.width);
     const viewportBottom = Math.max(HEIGHT * 4, this.scale.height);
+    const abyssDeep = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(55).color;
     abyss.fillStyle(palette.abyss, .72).fillRect(0, GROUND_Y + 8, viewportRight, 12);
     abyss.fillStyle(palette.abyss, .86).fillRect(0, GROUND_Y + 20, viewportRight, 14);
-    abyss.fillStyle(0x050b0b, .96).fillRect(0, GROUND_Y + 34, viewportRight, viewportBottom - GROUND_Y - 34);
+    abyss.fillStyle(abyssDeep, .96).fillRect(0, GROUND_Y + 34, viewportRight, viewportBottom - GROUND_Y - 34);
     abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, GROUND_Y + 12, viewportRight, GROUND_Y + 12);
     for (let x = 24; x < viewportRight; x += 68) {
       const depth = 12 + (x % 4) * 7;
       abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, GROUND_Y + 17, x, GROUND_Y + 17 + depth);
       abyss.fillStyle(0xd6a45d, .38).fillCircle(x, GROUND_Y + 19 + depth, 1.5);
     }
+  }
+
+  /** Soft vertical gradient unique to each chapter. */
+  private buildSkyGradient() {
+    const key = `sky-${this.level.id}`;
+    if (this.textures.exists(key)) return;
+    const palette = this.level.palette;
+    const canvasTexture = this.textures.createCanvas(key, 4, 512)!;
+    const ctx = canvasTexture.context;
+    const gradient = ctx.createLinearGradient(0, 0, 0, 512);
+    const top = Phaser.Display.Color.IntegerToColor(palette.skyTop);
+    const bottom = Phaser.Display.Color.IntegerToColor(palette.skyBottom);
+    gradient.addColorStop(0, top.rgba);
+    gradient.addColorStop(.62, bottom.rgba);
+    gradient.addColorStop(1, `#${palette.sky.toString(16).padStart(6, '0')}`);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 4, 512);
+    canvasTexture.refresh();
+  }
+
+  /**
+   * A procedural silhouette skyline so every chapter reads as a different
+   * place: jungle arches, stalactites, tea hills, or the twin towers.
+   */
+  private buildSilhouette() {
+    const key = `sil-${this.level.id}`;
+    if (this.textures.exists(key)) return;
+    const width = 1024;
+    const height = 540;
+    const g = this.add.graphics();
+    const random = new Phaser.Math.RandomDataGenerator([this.level.id]);
+    const id = this.level.id;
+
+    if (id === 'arrival') {
+      g.fillStyle(0x224034, 1);
+      for (let x = 30; x < width; x += 210 + Math.floor(random.frac() * 90)) {
+        const postHeight = 200 + random.frac() * 120;
+        g.fillRect(x, height - postHeight, 26, postHeight);
+        g.fillRect(x + 118, height - postHeight, 26, postHeight);
+        g.fillRect(x - 10, height - postHeight - 18, 190, 20);
+        g.fillRect(x + 74, height - postHeight - 34, 22, 18);
+      }
+      g.fillStyle(0x1b3529, 1);
+      for (let x = 120; x < width; x += 260 + Math.floor(random.frac() * 160)) {
+        const trunkHeight = 120 + random.frac() * 90;
+        g.fillRect(x, height - trunkHeight, 10, trunkHeight);
+        for (let frond = 0; frond < 5; frond += 1) {
+          const angle = -Math.PI + (frond / 4) * Math.PI;
+          g.fillPoints([
+            { x: x + 5, y: height - trunkHeight },
+            { x: x + 5 + Math.cos(angle) * 52, y: height - trunkHeight + Math.sin(angle) * 30 - 12 },
+            { x: x + 5 + Math.cos(angle) * 62, y: height - trunkHeight + Math.sin(angle) * 30 + 2 },
+          ], true);
+        }
+      }
+    } else if (id === 'caverns') {
+      g.fillStyle(0x0c1822, 1);
+      for (let x = 0; x < width; x += 40) {
+        const length = 60 + random.frac() * 190;
+        g.fillTriangle(x - 6, 0, x + 46, 0, x + 20, length);
+      }
+      for (let x = 20; x < width; x += 130) {
+        const mound = 50 + random.frac() * 110;
+        g.fillTriangle(x, height, x + 210, height, x + 105, height - mound);
+      }
+      g.fillStyle(0x11222e, .8);
+      for (let x = 0; x < width; x += 90) {
+        g.fillTriangle(x, 0, x + 60, 0, x + 30, 40 + random.frac() * 90);
+      }
+    } else if (id === 'terraces') {
+      g.fillStyle(0x2e5138, 1);
+      for (let band = 0; band < 3; band += 1) {
+        const baseY = 240 + band * 96;
+        g.beginPath();
+        g.moveTo(0, height);
+        for (let x = 0; x <= width; x += 32) {
+          g.lineTo(x, baseY + Math.sin((x / width) * Math.PI * (2 + band) + band * 2.2) * (34 - band * 8));
+        }
+        g.lineTo(width, height);
+        g.closePath();
+        g.fillPath();
+      }
+      g.fillStyle(0x3c6644, 1);
+      for (let row = 0; row < 3; row += 1) {
+        const y = 300 + row * 84;
+        for (let x = 20 + (row % 2) * 26; x < width; x += 52) {
+          g.fillEllipse(x, y + Math.sin(x / 140 + row) * 18, 26, 12);
+        }
+      }
+    } else {
+      g.fillStyle(0x241d3e, 1);
+      for (let x = 10; x < width; x += 86) {
+        const blockHeight = 90 + random.frac() * 180;
+        g.fillRect(x, height - blockHeight, 54 + random.frac() * 26, blockHeight);
+      }
+      g.fillStyle(0x2f2650, 1);
+      [[190, 470], [300, 430]].forEach(([x, towerHeight]) => {
+        g.fillRect(x, height - towerHeight, 44, towerHeight);
+        g.fillTriangle(x - 4, height - towerHeight, x + 48, height - towerHeight, x + 22, height - towerHeight - 64);
+        g.fillRect(x + 16, height - towerHeight - 96, 12, 40);
+      });
+      g.fillRect(196, height - 250, 142, 10);
+      g.fillStyle(0x1c1630, 1);
+      for (let x = 480; x < width; x += 74) {
+        const blockHeight = 70 + random.frac() * 200;
+        g.fillRect(x, height - blockHeight, 40 + random.frac() * 30, blockHeight);
+      }
+      g.lineStyle(4, 0x1c1630, 1);
+      [[560, 240], [820, 300]].forEach(([x, armY]) => {
+        g.lineBetween(x, height, x, height - armY);
+        g.lineBetween(x - 90, height - armY, x + 70, height - armY);
+        g.lineBetween(x, height - armY, x - 60, height - armY + 26);
+      });
+    }
+
+    g.generateTexture(key, width, height);
+    g.destroy();
+  }
+
+  /** Gentle ambient particles: leaves, cave motes, pollen, dusk embers. */
+  private addAmbientParticles() {
+    const id = this.level.id;
+    const config = id === 'caverns'
+      ? { tint: 0x9fd8c8, speedY: { min: -14, max: -4 }, speedX: { min: -8, max: 8 }, frequency: 420, scale: { start: .8, end: .1 }, alpha: { start: .5, end: 0 }, lifespan: 5200 }
+      : id === 'terraces'
+        ? { tint: 0xf1e3a9, speedY: { min: -6, max: 10 }, speedX: { min: 16, max: 46 }, frequency: 360, scale: { start: .9, end: .2 }, alpha: { start: .45, end: 0 }, lifespan: 4600 }
+        : id === 'ascent'
+          ? { tint: 0xe0a85a, speedY: { min: -26, max: -8 }, speedX: { min: -6, max: 6 }, frequency: 380, scale: { start: .8, end: .1 }, alpha: { start: .6, end: 0 }, lifespan: 4200 }
+          : { tint: 0x9fd08a, speedY: { min: 12, max: 34 }, speedX: { min: -30, max: -8 }, frequency: 420, scale: { start: 1.1, end: .3 }, alpha: { start: .5, end: 0 }, lifespan: 4600 };
+    this.add.particles(0, 0, 'p-dot', {
+      x: { min: 0, max: WIDTH },
+      emitZone: { type: 'random', source: new Phaser.Geom.Rectangle(0, id === 'caverns' ? 120 : 60, WIDTH, id === 'caverns' ? 380 : 260) },
+      quantity: 1,
+      ...config,
+    } as Phaser.Types.GameObjects.Particles.ParticleEmitterConfig).setScrollFactor(0).setDepth(11);
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
@@ -473,7 +631,7 @@ class GameScene extends Phaser.Scene {
       if (body.velocity.y > -260 && this.time.now > (cap.getData('bounceAt') ?? 0)) {
         cap.setData('bounceAt', this.time.now + 200);
         body.setVelocityY(-760);
-        audio.play('bounce');
+        audio.play('bounce', this.spatial(x));
         this.dust.explode(8, x, surfaceY - 14);
         this.tweens.add({ targets: cap, scaleY: .6, scaleX: 1.25, duration: 90, yoyo: true, ease: 'Quad.Out' });
       }
@@ -564,17 +722,21 @@ class GameScene extends Phaser.Scene {
     const lamps: Phaser.GameObjects.Rectangle[] = [];
     const labels: Phaser.GameObjects.Text[] = [];
     plateXs.forEach((x, index) => {
-      const lamp = this.add.circle(x, 424, 9, 0x22312c).setStrokeStyle(2, 0x688078).setDepth(3);
-      const label = this.add.text(x, 424, String(sequenceLampLabel(order, index)), {
-        fontFamily: '"DM Mono", monospace', fontSize: '11px', color: '#8fa39b',
-      }).setOrigin(.5).setDepth(4);
+      const lamp = this.add.circle(x, 419, 12, 0x22312c).setStrokeStyle(2, 0xb68247).setDepth(4);
+      const label = this.add.text(x, 419, String(sequenceLampLabel(order, index)), {
+        fontFamily: '"DM Mono", monospace', fontSize: '14px', color: '#f1d7a9', fontStyle: 'bold',
+      }).setOrigin(.5).setDepth(5);
       lamps.push(lamp as unknown as Phaser.GameObjects.Rectangle);
       labels.push(label);
       this.drawCable(x, gateX);
     });
+    // A readable legend right at the first plate.
+    this.add.text(plateXs[0] - 10, 372, 'STEP IN ORDER', {
+      fontFamily: '"DM Mono", monospace', fontSize: '10px', color: '#e0a85a', letterSpacing: 2,
+    }).setOrigin(.5).setDepth(4).setAlpha(.9);
     this.sequenceGates.push({
       bodies: [this.addBarrierBody(gateX)], open: false,
-      plates, lamps, labels, order, progress: 0, prev: plates.map(() => false),
+      plates, lamps, labels, order, progress: 0, prev: plates.map(() => false), flashUntil: 0,
     });
   }
 
@@ -613,7 +775,7 @@ class GameScene extends Phaser.Scene {
   private setGateOpen(gate: GateCore, opening: boolean, silent = false) {
     if (gate.open === opening) return;
     gate.open = opening;
-    if (!silent) audio.play(opening ? 'plate' : 'gate');
+    if (!silent) audio.play(opening ? 'plate' : 'gate', this.spatial(gate.bodies[0]?.rect.x ?? this.player.x));
     gate.bodies.forEach(barrier => {
       const body = barrier.rect.body as Phaser.Physics.Arcade.StaticBody;
       body.enable = false;
@@ -675,6 +837,7 @@ class GameScene extends Phaser.Scene {
       }
     });
     this.projectiles = this.physics.add.group({ allowGravity: false });
+    this.shurikens = this.physics.add.group({ allowGravity: false, maxSize: 4 });
   }
 
   private createShards() {
@@ -717,8 +880,10 @@ class GameScene extends Phaser.Scene {
   private bindInput() {
     const keyboard = this.input.keyboard!;
     this.cursors = keyboard.createCursorKeys();
-    this.keys = keyboard.addKeys('W,A,D,E,R,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
+    this.keys = keyboard.addKeys('W,A,D,E,F,R,X,ESC') as Record<string, Phaser.Input.Keyboard.Key>;
     keyboard.on('keydown-E', () => this.toggleRecording());
+    keyboard.on('keydown-F', () => this.throwShuriken());
+    keyboard.on('keydown-X', () => this.throwShuriken());
     keyboard.on('keydown-R', () => this.restartRun());
     keyboard.on('keydown-ESC', () => this.togglePause());
   }
@@ -736,6 +901,47 @@ class GameScene extends Phaser.Scene {
 
   setTouchJumpHeld(held: boolean) {
     touch.jumpHeld = held;
+  }
+
+  /** Also wired to the STAR touch button and the F/X keys. */
+  throwShuriken() {
+    if (!this.gameStarted || this.gameEnded || this.paused) return;
+    const now = this.time.now;
+    if (!cooldownReady(this.lastThrowAt, now, 520)) return;
+    if (this.shurikens.countActive(true) >= 3) return;
+    this.lastThrowAt = now;
+    const facing = this.player.flipX ? -1 : 1;
+    const star = this.shurikens.create(this.player.x + facing * 26, this.player.y - 42, 'shuriken') as Phaser.Physics.Arcade.Image;
+    star.setVelocity(facing * 540, 0).setDepth(7).setData('bornAt', now);
+    (star.body as Phaser.Physics.Arcade.Body).setSize(12, 12);
+    audio.play('throw');
+    this.tweens.add({ targets: this.player, scaleX: .38, duration: 60, yoyo: true });
+  }
+
+  private updateShurikens(time: number) {
+    this.shurikens.children.iterate(child => {
+      const star = child as Phaser.Physics.Arcade.Image;
+      if (!star.active) return true;
+      star.rotation += .5;
+      if (time - (star.getData('bornAt') as number) > 1400 || Math.abs(star.x - this.player.x) > 640) star.destroy();
+      return true;
+    });
+  }
+
+  private onShurikenHitEnemy(star: Phaser.Physics.Arcade.Image, enemyObject: Phaser.Physics.Arcade.Sprite) {
+    const enemy = enemyObject;
+    if (!enemy.getData('alive')) return;
+    const hitX = star.x;
+    const hitY = star.y;
+    const at = this.spatial(hitX);
+    star.destroy();
+    this.sparkle.explode(6, hitX, hitY);
+    if (enemy.getData('kind') === 'warden') {
+      this.hitWarden(enemy, hitX); // the warden's armour rings out inside hitWarden
+    } else {
+      audio.play('hit', at);
+      this.killEnemy(enemy);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -767,6 +973,15 @@ class GameScene extends Phaser.Scene {
       this.popProjectile(orb as Phaser.Physics.Arcade.Image);
       this.hurtPlayer();
     });
+    this.physics.add.collider(this.shurikens, this.platforms, (star) => {
+      const shuriken = star as Phaser.Physics.Arcade.Image;
+      if (!shuriken.active) return;
+      audio.play('clang', this.spatial(shuriken.x));
+      this.dust.explode(3, shuriken.x, shuriken.y);
+      shuriken.destroy();
+    });
+    this.physics.add.overlap(this.shurikens, this.groundEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
+    this.physics.add.overlap(this.shurikens, this.airEnemies, (star, enemy) => this.onShurikenHitEnemy(star as Phaser.Physics.Arcade.Image, enemy as Phaser.Physics.Arcade.Sprite));
   }
 
   private onPlayerEnemy(playerObject: Phaser.Physics.Arcade.Sprite, enemyObject: Phaser.Physics.Arcade.Sprite) {
@@ -778,8 +993,8 @@ class GameScene extends Phaser.Scene {
     const stompedFromAbove = playerBody.deltaY() > 0 && playerBody.bottom <= enemyBody.center.y + 10;
     if (stompedFromAbove) {
       player.setVelocityY(-330);
-      audio.play('stomp');
-      this.cameras.main.shake(80, .003);
+      audio.play('stomp', this.spatial(enemy.x));
+      this.cameras.main.shake(70, .0018);
       this.dust.explode(7, enemy.x, enemy.y + 8);
       if (enemy.getData('kind') === 'warden') this.hitWarden(enemy, playerBody.center.x);
       else this.killEnemy(enemy);
@@ -789,7 +1004,7 @@ class GameScene extends Phaser.Scene {
   private killEnemy(enemy: Phaser.Physics.Arcade.Sprite) {
     enemy.setData('alive', false);
     enemy.disableBody(true, true);
-    audio.play('pop');
+    audio.play('pop', this.spatial(enemy.x));
     this.sparkle.explode(8, enemy.x, enemy.y);
   }
 
@@ -806,11 +1021,12 @@ class GameScene extends Phaser.Scene {
       this.openGuardGates();
       this.showMessage('The warden falls. The gate yields.', 2600);
     } else {
-      audio.play('slam');
+      audio.play('clang', this.spatial(enemy.x));
       enemy.setData('staggerUntil', this.time.now + 450);
       const knock = enemy.x < playerX ? -170 : 170;
       (enemy.body as Phaser.Physics.Arcade.Body).setVelocityX(knock);
-      this.cameras.main.shake(120, .005);
+      const dx = Math.abs(this.player.x - enemy.x);
+      if (dx < 430) this.cameras.main.shake(110, .0035 * (1 - dx / 430));
     }
   }
 
@@ -829,7 +1045,7 @@ class GameScene extends Phaser.Scene {
     if (!crumble || crumble.state !== 'idle') return;
     crumble.state = 'shake';
     crumble.until = this.time.now + 460;
-    audio.play('crumble');
+    audio.play('crumble', this.spatial(crumble.baseX));
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -913,9 +1129,20 @@ class GameScene extends Phaser.Scene {
     this.updatePendulums(time);
     this.updateEnemies(time);
     this.updateProjectiles(time);
+    this.updateShurikens(time);
     this.updateCrumbles(time);
     this.updateShards(time);
     this.updateHints();
+
+    // Wind bed follows how deep the player is inside a gust zone.
+    let windStrength = 0;
+    for (const wind of this.winds) {
+      const inside = body.right > wind.zone.x && body.left < wind.zone.right;
+      const nearEdge = Math.min(Math.abs(body.right - wind.zone.x), Math.abs(body.left - wind.zone.right));
+      const strength = inside ? 1 : Math.max(0, 1 - nearEdge / 240) * .5;
+      windStrength = Math.max(windStrength, strength);
+    }
+    audio.wind(windStrength);
   }
 
   private updatePlayerAnimation(grounded: boolean, moving: boolean) {
@@ -940,10 +1167,11 @@ class GameScene extends Phaser.Scene {
 
   private updateHints() {
     if (this.hints.length === 0) return;
-    const next = this.hints[0];
-    if (this.player.x >= next.atX) {
-      this.hints.shift();
-      this.showMessage(next.text, 4200);
+    // Fire when the player walks NEAR the feature — before they reach it.
+    const index = this.hints.findIndex(hint => Math.abs(this.player.x - hint.atX) <= 240);
+    if (index >= 0) {
+      const [hint] = this.hints.splice(index, 1);
+      this.showMessage(hint.text, 4600);
     }
   }
 
@@ -1008,6 +1236,16 @@ class GameScene extends Phaser.Scene {
     return this.playingEcho && !!this.echo?.active;
   }
 
+  /** Distance/direction attenuation for positional sound, relative to the player. */
+  private spatial(x: number, maxDistance = 900): { volume: number; pan: number } {
+    const dx = x - this.player.x;
+    const distance = Math.abs(dx);
+    return {
+      volume: Math.max(0, Math.min(1, 1 - distance / maxDistance)),
+      pan: Math.max(-.85, Math.min(.85, dx / 480)),
+    };
+  }
+
   private isPlateActive(plate: Phaser.GameObjects.Rectangle) {
     const playerOn = Phaser.Geom.Rectangle.Overlaps(this.player.getBounds(), plate.getBounds());
     const echoOn = this.echoActive() && Phaser.Geom.Rectangle.Overlaps(this.echo!.getBounds(), plate.getBounds());
@@ -1065,7 +1303,7 @@ class GameScene extends Phaser.Scene {
 
   private armGateClose(gate: HoldGate, _time: number) {
     if (gate.closeTimer || gate.closeDelayMs === undefined) return;
-    audio.play('gate');
+    audio.play('gate', this.spatial(gate.bodies[0]?.rect.x ?? this.player.x));
     gate.closeTimer = this.time.delayedCall(gate.closeDelayMs, () => {
       gate.closeTimer = undefined;
       this.setGateOpen(gate, false);
@@ -1105,7 +1343,11 @@ class GameScene extends Phaser.Scene {
   private updateRelayGates(time: number) {
     this.relayGates.forEach(gate => {
       gate.plates.forEach((plate, index) => {
-        if (this.isPlateActive(plate)) gate.state = touchRelayPlate(gate.state, index, time, gate.holdMs) as number[];
+        if (this.isPlateActive(plate)) {
+          const wasDead = gate.state[index] <= time;
+          gate.state = touchRelayPlate(gate.state, index, time, gate.holdMs) as number[];
+          if (wasDead) audio.play('toggle', this.spatial(plate.x));
+        }
         const charge = relayCharge(gate.state, index, time, gate.holdMs);
         gate.bars[index].setDisplaySize(60 * charge, 5).setAlpha(charge > 0 ? .95 : .18);
         plate.setFillStyle(charge > 0 ? 0x9fd08a : 0x6a7a5a);
@@ -1116,7 +1358,6 @@ class GameScene extends Phaser.Scene {
   }
 
   private updateSequenceGates(time: number) {
-    void time;
     this.sequenceGates.forEach(gate => {
       if (gate.progress >= gate.order.length) {
         gate.lamps.forEach((lamp, index) => {
@@ -1131,40 +1372,62 @@ class GameScene extends Phaser.Scene {
           const before = gate.progress;
           gate.progress = advanceSequence(gate.progress, index, gate.order);
           if (gate.progress > before) {
-            audio.play('good');
+            audio.play('good', this.spatial(gate.plates[index].x));
+            const lamp = gate.lamps[index];
+            this.tweens.add({ targets: lamp, scale: 1.5, duration: 110, yoyo: true, ease: 'Quad.Out' });
             if (gate.progress >= gate.order.length) {
-              audio.play('unlock');
+              audio.play('unlock', this.spatial(gate.bodies[0]?.rect.x ?? this.player.x));
               this.setGateOpen(gate, true, true);
-              this.showMessage('The tea-press accepts the sequence. Gate released.', 2600);
+              this.showMessage('Sequence accepted — 1 · 2 · 3. The gate releases.', 2600);
+            } else {
+              this.showMessage(`Accepted. Next: plate ${gate.progress + 1} of ${gate.order.length}.`, 1500);
             }
           } else {
             gate.progress = 0;
-            audio.play('bad');
-            this.cameras.main.shake(90, .003);
+            gate.flashUntil = time + 420;
+            audio.play('bad', this.spatial(gate.plates[index].x));
+            this.showMessage('Wrong order — the sequence resets. Follow 1 · 2 · 3.', 2000);
           }
         }
         gate.prev[index] = on;
       });
+      const flashing = time < gate.flashUntil;
       gate.lamps.forEach((lamp, index) => {
+        if (flashing) {
+          lamp.setFillStyle(0xd16151);
+          gate.labels[index].setColor('#f1d7a9');
+          return;
+        }
+        const isNext = gate.order[gate.progress] === index;
         const lit = gate.order.indexOf(index) < gate.progress;
-        lamp.setFillStyle(lit ? 0xe0a85a : 0x22312c);
-        gate.labels[index].setColor(lit ? '#171713' : '#8fa39b');
+        lamp.setFillStyle(lit ? 0xe0a85a : isNext ? 0xf1d7a9 : 0x22312c);
+        gate.labels[index].setColor(lit ? '#171713' : isNext ? '#f1d7a9' : '#8fa39b');
       });
     });
   }
 
   private updateEchoGates(time: number) {
-    void time;
     this.echoGates.forEach(gate => {
       gate.pads.forEach((pad, index) => {
         const over = this.echoActive() && Phaser.Geom.Rectangle.Overlaps(this.echo!.getBounds(), pad.getBounds());
         if (over && !gate.prev[index]) {
           gate.states[index] = !gate.states[index];
-          audio.play(gate.states[index] ? 'chime' : 'toggle');
+          audio.play(gate.states[index] ? 'chime' : 'toggle', this.spatial(pad.x));
           this.sparkle.explode(8, pad.x, 440);
           gate.crystals[index].setTint(gate.states[index] ? 0xffffff : 0x9fbdb4);
         }
         gate.prev[index] = over;
+        // The player themselves cannot wake a crystal — shimmer a polite refusal.
+        const playerOver = Phaser.Geom.Rectangle.Overlaps(this.player.getBounds(), pad.getBounds());
+        if (playerOver && !gate.states[index] && time > (pad.getData('rejectAt') ?? 0)) {
+          pad.setData('rejectAt', time + 1100);
+          audio.play('reject', this.spatial(pad.x));
+          this.tweens.add({ targets: gate.crystals[index], x: pad.x - 3, duration: 45, yoyo: true, repeat: 3 });
+          if (this.lastHint !== 'resonator') {
+            this.lastHint = 'resonator';
+            this.showMessage('The crystal ignores the living — only your ECHO can wake it.', 3000);
+          }
+        }
         pad.setFillStyle(gate.states[index] ? 0x2c5a50 : 0x1f3a36);
       });
       const shouldOpen = echoSwitchGateOpen(gate.states);
@@ -1178,7 +1441,7 @@ class GameScene extends Phaser.Scene {
       if (active !== lift.powered) {
         lift.powered = active;
         lift.plate.setFillStyle(active ? 0xe0a85a : 0xb68247);
-        audio.play(active ? 'plate' : 'gate');
+        audio.play(active ? 'plate' : 'gate', this.spatial(lift.plate.x));
       }
       const body = lift.platform.body as Phaser.Physics.Arcade.Body;
       const position = lift.axis === 'x' ? lift.platform.x : lift.platform.y;
@@ -1214,19 +1477,31 @@ class GameScene extends Phaser.Scene {
     this.crushers.forEach(crusher => {
       const t = ((time + crusher.phase) % crusher.period) / crusher.period;
       let y = crusher.hangY;
-      if (t < .3) y = crusher.hangY;
-      else if (t < .4) {
+      let telegraph = false;
+      if (t < .3) {
+        y = crusher.hangY;
+        telegraph = t > .2; // tremble warning right before the drop
+      } else if (t < .4) {
         const k = (t - .3) / .1;
         y = crusher.hangY + (crusher.slamY - crusher.hangY) * k * k;
-      } else if (t < .5) y = crusher.slamY;
-      else {
+      } else if (t < .5) {
+        y = crusher.slamY;
+      } else {
         const k = (t - .5) / .5;
         y = crusher.slamY + (crusher.hangY - crusher.slamY) * (1 - Math.pow(1 - k, 2));
       }
+      if (telegraph) y += Math.sin(time / 16) * 1.8;
       if (y >= crusher.slamY - 1 && crusher.head.y < crusher.slamY - 1) {
-        audio.play('slam');
-        this.dust.explode(6, crusher.x, crusher.slamY + 14);
-        this.cameras.main.shake(60, .0018);
+        // Proximity-only feedback: distant smashes stay silent and still.
+        const at = this.spatial(crusher.x, 760);
+        if (at.volume > .04) {
+          audio.play('slam', at);
+          const dx = Math.abs(this.player.x - crusher.x);
+          if (dx < 430) this.cameras.main.shake(70, .0011 * (1 - dx / 430));
+          this.dust.explode(6, crusher.x, crusher.slamY + 14);
+          const ring = this.add.circle(crusher.x, crusher.slamY + 12, 12).setStrokeStyle(2, 0xd6a45d, .7).setDepth(5);
+          this.tweens.add({ targets: ring, scale: 2.6, alpha: 0, duration: 300, onComplete: () => ring.destroy() });
+        }
       }
       crusher.head.y = y;
       crusher.teeth.y = y + 14;
@@ -1282,7 +1557,7 @@ class GameScene extends Phaser.Scene {
       const body = enemy.body as Phaser.Physics.Arcade.Body;
       if (enemy.y > HEIGHT + 160) { enemy.disableBody(true, true); return true; }
       switch (enemy.getData('kind')) {
-        case 'crawler': this.updateCrawler(enemy, body); break;
+        case 'crawler': this.updateCrawler(enemy, body, time); break;
         case 'spitter': this.updateSpitter(enemy, body, time); break;
         case 'charger': this.updateCharger(enemy, body, time); break;
         case 'warden': this.updateWarden(enemy, body, time); break;
@@ -1309,9 +1584,15 @@ class GameScene extends Phaser.Scene {
     enemy.setFlipX(dir > 0);
   }
 
-  private updateCrawler(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body) {
+  private updateCrawler(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
     if (enemy.getData('dir') === undefined) enemy.setData('dir', body.velocity.x >= 0 ? 1 : -1);
     this.patrolFlip(enemy, body, 70);
+    // Audible skittering, but only within earshot.
+    if (time >= (enemy.getData('nextSkitter') ?? 0)) {
+      enemy.setData('nextSkitter', time + 760 + (enemy.getData('index') as number) * 173 % 520);
+      const at = this.spatial(enemy.x, 560);
+      if (at.volume > .05) audio.play('tick', at);
+    }
   }
 
   private updateSpitter(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
@@ -1340,7 +1621,7 @@ class GameScene extends Phaser.Scene {
     const length = Math.max(1, Math.hypot(dx, dy));
     orb.setVelocity(dx / length * 265, dy / length * 265);
     orb.setDepth(6).setData('born', this.time.now);
-    audio.play('shoot');
+    audio.play('shoot', this.spatial(enemy.x));
   }
 
   private updateProjectiles(time: number) {
@@ -1366,6 +1647,7 @@ class GameScene extends Phaser.Scene {
       if (target) {
         enemy.setData('state', 'windup').setData('windupUntil', time + 350);
         body.setVelocityX(0);
+        audio.play('growl', this.spatial(enemy.x, 640));
       }
     } else if (state === 'windup') {
       body.setVelocityX(0);
@@ -1375,13 +1657,15 @@ class GameScene extends Phaser.Scene {
         enemy.setAlpha(1);
         enemy.setData('state', 'charge').setData('chargeUntil', time + 900);
         enemy.setData('dir', target && target.x < enemy.x ? -1 : 1);
+        audio.play('swoop', this.spatial(enemy.x, 640));
       }
     } else if (state === 'charge') {
       this.patrolFlip(enemy, body, 340);
       if (body.blocked.left || body.blocked.right) {
         enemy.setData('state', 'dizzy').setData('dizzyUntil', time + 600);
-        audio.play('slam');
-        this.cameras.main.shake(70, .002);
+        audio.play('slam', this.spatial(enemy.x, 640));
+        const dx = Math.abs(this.player.x - enemy.x);
+        if (dx < 380) this.cameras.main.shake(60, .0012 * (1 - dx / 380));
         this.dust.explode(5, enemy.x, enemy.y + 10);
       } else if (time >= (enemy.getData('chargeUntil') as number)) {
         enemy.setData('state', 'dizzy').setData('dizzyUntil', time + 500);
@@ -1401,10 +1685,18 @@ class GameScene extends Phaser.Scene {
     const hp = enemy.getData('hp') as number;
     const target = this.nearestTarget(enemy.x, enemy.y, 460, 130);
     if (target) {
+      if (!enemy.getData('aggroed')) {
+        enemy.setData('aggroed', true);
+        audio.play('growl', this.spatial(enemy.x, 760));
+      }
       const dir = target.x < enemy.x ? -1 : 1;
       enemy.setData('dir', dir);
       body.setVelocityX(dir * (150 + (3 - hp) * 28));
       enemy.setFlipX(dir > 0);
+      if (time >= (enemy.getData('nextStep') ?? 0)) {
+        enemy.setData('nextStep', time + 620);
+        audio.play('stepheavy', this.spatial(enemy.x, 700));
+      }
     } else {
       this.patrolFlip(enemy, body, 60);
     }
@@ -1425,7 +1717,7 @@ class GameScene extends Phaser.Scene {
         const length = Math.max(1, Math.hypot(dx, dy));
         body.setVelocity(dx / length * 300, dy / length * 300);
         enemy.setData('state', 'swoop').setData('swoopUntil', time + 700);
-        audio.play('shoot');
+        audio.play('swoop', this.spatial(enemy.x));
       }
     } else if (state === 'swoop') {
       if (time >= (enemy.getData('swoopUntil') as number)) enemy.setData('state', 'return');
@@ -1604,16 +1896,21 @@ function renderChips(progress: PlayerProgress) {
     chip.type = 'button';
     const record = progress.best[level.id];
     const locked = index > progress.unlocked;
+    const accent = `#${level.palette.sky.toString(16).padStart(6, '0')}`;
     chip.className = [
       'chip',
       index === progress.current ? 'active' : '',
       locked ? 'locked' : '',
       record ? 'done' : '',
     ].filter(Boolean).join(' ');
+    chip.style.setProperty('--accent', accent);
     chip.innerHTML = `
       <span class="chip-index">${index + 1}</span>
-      <span class="chip-name">${level.name}</span>
-      <span class="chip-meta">${locked ? 'LOCKED' : record ? `${formatRunTime(record.ms)} · ${record.shards}/${level.shards.length}` : 'NEW'}</span>
+      <span class="chip-body">
+        <span class="chip-name">${level.name}</span>
+        <span class="chip-sub">${level.subtitle}</span>
+      </span>
+      <span class="chip-meta">${locked ? 'LOCKED · FINISH PREVIOUS' : record ? `BEST ${formatRunTime(record.ms)} · ${record.shards}/${level.shards.length} SHARDS` : 'NEW · NOT CLEARED'}</span>
     `;
     chip.addEventListener('click', () => {
       if (locked) {
@@ -1678,6 +1975,7 @@ bindHold(document.querySelector('#tc-left')!, () => scene().setTouchDirection('l
 bindHold(document.querySelector('#tc-right')!, () => scene().setTouchDirection('right'), () => scene().setTouchDirection(touch.left ? 'left' : 'none'));
 bindHold(document.querySelector('#tc-jump')!, () => { scene().setTouchJumpHeld(true); scene().queueJump(); }, () => scene().setTouchJumpHeld(false));
 bindHold(document.querySelector('#tc-echo')!, () => scene().toggleRecording(), () => undefined);
+bindHold(document.querySelector('#tc-star')!, () => scene().throwShuriken(), () => undefined);
 // Pause automatically when the tab loses focus (mobile switching).
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) scene().togglePause(true);
