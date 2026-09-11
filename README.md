@@ -10,7 +10,7 @@ An original Malaysian-themed 2D platformer built with Phaser, TypeScript, and Vi
 - **Shuriken** — throw with `F`/`X`/★ to clip kites, creepers, boars, and (three hits) the warden.
 - **Obstacles** — spike beds, slam crushers, pendulum bombs, collapsing planks, spring mushrooms, drifting platforms, and highland wind zones.
 - **Five enemies** — crawlers, kite flyers, pitcher-plant spitters, charger boars, and the three-stomp Warden mini-boss. Flyers, chargers, wardens, and spitters all hunt the nearest automaton — the echo counts.
-- **Four distinct scenes** — every chapter has its own sky gradient, procedural silhouette (jungle arches, stalactites, tea hills, dusk twin towers), ambient particles, tinted parallax, and ambient soundscape.
+- **Layered scenery on every chapter** — the original Malaysian parallax stack (distant skyline, clockwork architecture, tropical foliage) runs everywhere, palette-tinted per level; chapters 2–4 add their own generated backdrop painting crawling far behind it. The void below the level is a clean deep gradient with a brass rim.
 - **Positional audio** — sounds fade and pan with distance; a compressor-softened synth palette plus per-chapter ambience (cave drips, highland birds) replaces the old 8-bit blips.
 - **Mobile-first** — on-screen touch controls (move, jump, echo, star, pause, fullscreen), FIT scaling for any screen, safe-area padding, and automatic pause on tab switch. Keyboard play still works everywhere.
 

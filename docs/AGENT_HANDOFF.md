@@ -79,7 +79,9 @@ Every level carries a `hints` list. Hints fire by **proximity** (|player.x − a
 
 ### Per-chapter presentation
 
-Each level uses a dedicated generated backdrop painting, `public/assets/level-<id>.png` (arrival clockwork jungle city, Batu-style crystal caverns, Cameron tea hills, dusk KL twin towers). `drawWorld()` cover-fits it, wraps two copies for slow parallax (rate 0.12), and adds a bottom shade so geometry sits into the scene. The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles. Wind gust zones keep their drifting leaf particles because they communicate gameplay.
+The original three-layer Malaysian parallax runs on every chapter — `malaysia-skyline` (rate 0.08), `malaysia-midground` (0.24), `malaysia-foreground` foliage (0.46) — palette-tinted per level. Chapter 1 (Arrival Gate) uses that stack exactly as shipped. Chapters 2–4 additionally place their generated painting (`public/assets/level-<id>.png`: crystal caverns, Cameron tea hills, dusk KL twin towers) as a far identity layer (rate 0.05, cover-fit, tinted) behind the original stack. The void below the ground is a clean banded gradient (palette abyss → near-black) with a thin brass rim — no tick marks or dots.
+
+The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles. The city profile plays only its drone and clockwork tick — no random clanks (they read as distant smashes). Crusher slams are strictly proximity-gated: audio within ~620 px, camera micro-shake within ~320 px, dust and shock ring within ~620 px; heads tremble as a telegraph before dropping. Wind gust zones keep their drifting leaf particles because they communicate gameplay.
 
 ### Positional audio
 

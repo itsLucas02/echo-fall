@@ -192,9 +192,10 @@ export class AudioDirector {
         this.noise(.05, .05 * volume, 1400, pan);
         break;
       case 'slam':
-        this.tone(90, .3, 'sine', .22 * volume, 38, 0, pan);
-        this.noise(.14, .12 * volume, 260, pan);
-        this.tone(720, .1, 'triangle', .035 * volume, 690, .01, pan);
+        // A rounded underground whump: quick low swell, gentle tail, dust.
+        this.tone(58, .34, 'sine', .15 * volume, 26, 0, pan);
+        this.tone(116, .16, 'sine', .06 * volume, 52, 0, pan);
+        this.noise(.11, .03 * volume, 140, pan);
         break;
       case 'good':
         this.tone(523, .11, 'triangle', .07 * volume, 525, 0, pan);
@@ -391,7 +392,8 @@ export class AudioDirector {
     this.tone(note, .8, 'triangle', profile.volume, profile.notes[(step + 1) % profile.notes.length]);
     this.tone(110, .03, 'square', .014, 95, .42);
 
-    // Sparse per-chapter life.
+    // Sparse per-chapter life. The city keeps only its quiet clockwork tick —
+    // no random clanks; anything event-like must come from actual world events.
     const roll = Math.random();
     if (this.ambience === 'cave' && roll < .22) {
       this.tone(1350, .16, 'sine', .03, 420, Math.random() * .3);
@@ -400,8 +402,6 @@ export class AudioDirector {
       const base = 1800 + Math.random() * 500;
       this.tone(base, .06, 'sine', .02, base * 1.25);
       this.tone(base * 1.1, .07, 'sine', .018, base * 1.4, .09);
-    } else if (this.ambience === 'city' && roll < .14) {
-      this.tone(196, .3, 'triangle', .012, 130, Math.random() * .4);
     } else if (this.ambience === 'dusk' && roll < .18) {
       this.tone(1560, .12, 'sine', .012, 2080, Math.random() * .4);
     }

@@ -171,6 +171,9 @@ class GameScene extends Phaser.Scene {
 
   preload() {
     this.load.image('courier-source', 'assets/kite-sprite-source.png');
+    this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
+    this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
+    this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
     this.load.image('level-arrival', 'assets/level-arrival.png');
     this.load.image('level-caverns', 'assets/level-caverns.png');
     this.load.image('level-terraces', 'assets/level-terraces.png');
@@ -396,33 +399,49 @@ class GameScene extends Phaser.Scene {
     const palette = this.level.palette;
     this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
 
-    // Hand-generated per-chapter backdrop art, cover-fit and slowly parallaxed.
-    const textureKey = `level-${this.level.id}`;
-    const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
-    const coverScale = Math.max(HEIGHT / source.height, WIDTH / source.width) * 1.05;
-    const layerWidth = source.width * coverScale;
-    const images = [0, layerWidth].map(x => this.add.image(x, 0, textureKey)
-      .setOrigin(0).setScrollFactor(0).setScale(coverScale).setDepth(-30));
-    this.parallaxLayers = [{ images, width: layerWidth, rate: .12 }];
+    // The original Malaysian parallax stack — skyline, architecture, foliage —
+    // runs on every chapter. Arrival keeps it exactly as shipped.
+    const imageScale = HEIGHT / 724;
+    const layerWidth = 2172 * imageScale;
+    const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
+      const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
+        .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
+      if (palette.tint !== 0xffffff) images.forEach(image => image.setTint(palette.tint));
+      this.parallaxLayers.push({ images, width: layerWidth, rate });
+    };
 
-    // Gentle bottom shade so geometry sits into the scene.
-    const shade = this.add.graphics().setScrollFactor(0).setDepth(-20);
-    shade.fillGradientStyle(0x000000, 0x000000, palette.abyss, palette.abyss, 0, 0, .34, .6);
-    shade.fillRect(0, Math.round(HEIGHT * .42), WIDTH, Math.ceil(HEIGHT * .58));
+    this.parallaxLayers = [];
 
+    // Chapters 2-4 gain a far identity layer from the generated chapter art,
+    // crawling behind the original stack. Arrival stays purely original.
+    if (this.level.id !== 'arrival') {
+      const textureKey = `level-${this.level.id}`;
+      const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
+      const coverScale = Math.max(HEIGHT / source.height, WIDTH / source.width) * 1.18;
+      const backdropWidth = source.width * coverScale;
+      const backdrop = [0, backdropWidth].map(x => this.add.image(x, 0, textureKey)
+        .setOrigin(0).setScrollFactor(0).setScale(coverScale).setDepth(-35).setAlpha(.92));
+      if (palette.tint !== 0xffffff) backdrop.forEach(image => image.setTint(palette.tint));
+      this.parallaxLayers.push({ images: backdrop, width: backdropWidth, rate: .05 });
+    }
+
+    addLayer('malaysia-skyline', .08, -30, this.level.id === 'arrival' ? 1 : .72);
+    addLayer('malaysia-midground', .24, -20, this.level.id === 'arrival' ? .88 : .62);
+    addLayer('malaysia-foreground', .46, .5, .82);
+
+    // The void: a clean, quiet fade — deep gradient plus a brass edge light.
     const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
     const viewportRight = Math.max(WIDTH, this.scale.width);
     const viewportBottom = Math.max(HEIGHT * 4, this.scale.height);
-    const abyssDeep = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(55).color;
-    abyss.fillStyle(palette.abyss, .72).fillRect(0, GROUND_Y + 8, viewportRight, 12);
-    abyss.fillStyle(palette.abyss, .86).fillRect(0, GROUND_Y + 20, viewportRight, 14);
-    abyss.fillStyle(abyssDeep, .96).fillRect(0, GROUND_Y + 34, viewportRight, viewportBottom - GROUND_Y - 34);
-    abyss.lineStyle(1, 0x88b6a3, .18).lineBetween(0, GROUND_Y + 12, viewportRight, GROUND_Y + 12);
-    for (let x = 24; x < viewportRight; x += 68) {
-      const depth = 12 + (x % 4) * 7;
-      abyss.lineStyle(2, 0x28443d, .36).lineBetween(x, GROUND_Y + 17, x, GROUND_Y + 17 + depth);
-      abyss.fillStyle(0xd6a45d, .38).fillCircle(x, GROUND_Y + 19 + depth, 1.5);
-    }
+    const deep = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(38).color;
+    const deeper = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(72).color;
+    abyss.fillStyle(palette.abyss, .68).fillRect(0, GROUND_Y + 6, viewportRight, 30);
+    abyss.fillStyle(palette.abyss, .88).fillRect(0, GROUND_Y + 36, viewportRight, 46);
+    abyss.fillStyle(deep, .95).fillRect(0, GROUND_Y + 82, viewportRight, 150);
+    abyss.fillStyle(deeper, .98).fillRect(0, GROUND_Y + 232, viewportRight, viewportBottom - GROUND_Y - 232);
+    // Thin brass rim hugging the ground line, then nothing but depth.
+    abyss.fillStyle(0xe0a85a, .22).fillRect(0, GROUND_Y + 6, viewportRight, 2);
+    abyss.fillStyle(0x88b6a3, .1).fillRect(0, GROUND_Y + 40, viewportRight, 1);
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
@@ -1366,15 +1385,15 @@ class GameScene extends Phaser.Scene {
       }
       if (telegraph) y += Math.sin(time / 16) * 1.8;
       if (y >= crusher.slamY - 1 && crusher.head.y < crusher.slamY - 1) {
-        // Proximity-only feedback: distant smashes stay silent and still.
-        const at = this.spatial(crusher.x, 760);
-        if (at.volume > .04) {
-          audio.play('slam', at);
-          const dx = Math.abs(this.player.x - crusher.x);
-          if (dx < 430) this.cameras.main.shake(70, .0011 * (1 - dx / 430));
-          this.dust.explode(6, crusher.x, crusher.slamY + 14);
-          const ring = this.add.circle(crusher.x, crusher.slamY + 12, 12).setStrokeStyle(2, 0xd6a45d, .7).setDepth(5);
-          this.tweens.add({ targets: ring, scale: 2.6, alpha: 0, duration: 300, onComplete: () => ring.destroy() });
+        // Strictly proximity-based: silent and still beyond ~620px.
+        const dx = Math.abs(this.player.x - crusher.x);
+        const at = this.spatial(crusher.x, 620);
+        if (at.volume > .1) audio.play('slam', at);
+        if (dx < 320) this.cameras.main.shake(60, .0009 * (1 - dx / 320));
+        if (dx < 620) {
+          this.dust.explode(5, crusher.x, crusher.slamY + 14);
+          const ring = this.add.circle(crusher.x, crusher.slamY + 12, 12).setStrokeStyle(2, 0xd6a45d, .55).setDepth(5);
+          this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: 260, onComplete: () => ring.destroy() });
         }
       }
       crusher.head.y = y;
