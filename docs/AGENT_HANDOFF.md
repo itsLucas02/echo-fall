@@ -8,7 +8,7 @@ Do not introduce a double jump. The intended movement uses a single jump, 110 ms
 
 ## Stack
 
-- Phaser 3 with Arcade Physics (`Phaser.Scale.FIT`, 960×540 design resolution)
+- Phaser 3 with Arcade Physics (responsive `Phaser.Scale.RESIZE` + adaptive camera zoom, centered 960×540 design band — see `docs/PARALLAX_ART.md`)
 - TypeScript, Vite, Vitest
 - Browser Web Audio API for procedural sound (no audio files)
 - Static hosting with no backend; relative asset URLs for GitHub Pages
@@ -79,7 +79,7 @@ Every level carries a `hints` list. Hints fire by **proximity** (|player.x − a
 
 ### Per-chapter presentation
 
-The original three-layer Malaysian parallax runs on every chapter — `malaysia-skyline` (rate 0.08), `malaysia-midground` (0.24), `malaysia-foreground` foliage (0.46) — palette-tinted per level. Chapter 1 (Arrival Gate) uses that stack exactly as shipped. Chapters 2–4 additionally place their generated painting (`public/assets/level-<id>.png`: crystal caverns, Cameron tea hills, dusk KL twin towers) as a far identity layer (rate 0.05, cover-fit, tinted) behind the original stack. The void below the ground is a clean banded gradient (palette abyss → near-black) with a thin brass rim — no tick marks or dots.
+Every chapter now owns a **unique four-layer art stack**: an opaque background (`<id>-bg`) plus three transparent parallax layers (`<id>-far`, `<id>-mid`, `<id>-near`), scaled to the centered 540px play band and mirror-tiled so edges meet. Chapter 1 (Arrival Gate) keeps the original palette-tinted Malaysian stack (`malaysia-skyline` 0.08, `malaysia-midground` 0.24, `malaysia-foreground` foliage 0.46). The band is centered between a palette sky gradient above and an abyss gradient below, with soft edge fades. The full responsive-layout spec, asset naming, and the complete image-generation prompts live in `docs/PARALLAX_ART.md`.
 
 The audio ambience follows suit: `AudioDirector.setAmbience()` switches between city, cave (drips), highland (birds), and dusk (sparkles) profiles. The city profile plays only its drone and clockwork tick — no random clanks (they read as distant smashes). Crusher slams are strictly proximity-gated: audio within ~620 px, camera micro-shake within ~320 px, dust and shock ring within ~620 px; heads tremble as a telegraph before dropping. Wind gust zones keep their drifting leaf particles because they communicate gameplay.
 

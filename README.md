@@ -37,3 +37,4 @@ The production output is written to `dist/`. Vite uses relative asset paths and 
 - [MVP scope](docs/MVP.md)
 - [Technical plan](docs/TECHNICAL_PLAN.md)
 - [Agent handoff and gameplay mechanics](docs/AGENT_HANDOFF.md)
+- [Parallax art pipeline and prompts](docs/PARALLAX_ART.md)
