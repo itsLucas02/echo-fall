@@ -469,8 +469,15 @@ class GameScene extends Phaser.Scene {
     const abyss = this.add.graphics().setDepth(.75);
     const abyssX = -WIDTH;
     const abyssWidth = this.level.worldWidth + WIDTH * 2;
-    const deep = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(38).color;
-    const deeper = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(72).color;
+    // Scale RGB directly — Color.darken() is HSV-value based and wraps for very
+    // dark colours (e.g. #050c10 -> #193d51), which wrongly brightened the void.
+    const shade = (color: number, factor: number) => Phaser.Display.Color.GetColor(
+      Math.round(((color >> 16) & 0xff) * factor),
+      Math.round(((color >> 8) & 0xff) * factor),
+      Math.round((color & 0xff) * factor),
+    );
+    const deep = shade(palette.abyss, .62);
+    const deeper = shade(palette.abyss, .32);
     abyss.fillStyle(palette.abyss, .68).fillRect(abyssX, GROUND_Y + 6, abyssWidth, 30);
     abyss.fillStyle(palette.abyss, .88).fillRect(abyssX, GROUND_Y + 36, abyssWidth, 46);
     abyss.fillStyle(deep, .95).fillRect(abyssX, GROUND_Y + 82, abyssWidth, 150);
@@ -489,9 +496,9 @@ class GameScene extends Phaser.Scene {
       if (fitZoom >= step - 1e-4) { zoom = step; break; }
     }
     camera.setZoom(zoom);
-    // Anchor the band to the bottom so all spare vertical space is sky above the
-    // play area (matching the original framing) rather than void below it.
-    this.bandOffset = Math.max(0, this.scale.height / zoom - HEIGHT);
+    // Center the 540px band: spare vertical space splits equally into a sky band
+    // above and an underground (abyss) band below.
+    this.bandOffset = Math.max(0, (this.scale.height / zoom - HEIGHT) / 2);
     camera.setBounds(0, -this.bandOffset, this.level.worldWidth, HEIGHT);
     this.layoutParallax();
     this.positionParallax();
