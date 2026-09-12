@@ -204,10 +204,18 @@ class GameScene extends Phaser.Scene {
     this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
     this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
     this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
-    this.load.image('level-arrival', 'assets/level-arrival.png');
-    this.load.image('level-caverns', 'assets/level-caverns.png');
-    this.load.image('level-terraces', 'assets/level-terraces.png');
-    this.load.image('level-ascent', 'assets/level-ascent.png');
+    this.load.image('caverns-bg', 'assets/caverns-bg.png');
+    this.load.image('caverns-far', 'assets/caverns-far.png');
+    this.load.image('caverns-mid', 'assets/caverns-mid.png');
+    this.load.image('caverns-near', 'assets/caverns-near.png');
+    this.load.image('terraces-bg', 'assets/terraces-bg.png');
+    this.load.image('terraces-far', 'assets/terraces-far.png');
+    this.load.image('terraces-mid', 'assets/terraces-mid.png');
+    this.load.image('terraces-near', 'assets/terraces-near.png');
+    this.load.image('ascent-bg', 'assets/ascent-bg.png');
+    this.load.image('ascent-far', 'assets/ascent-far.png');
+    this.load.image('ascent-mid', 'assets/ascent-mid.png');
+    this.load.image('ascent-near', 'assets/ascent-near.png');
   }
 
   create() {
@@ -449,23 +457,27 @@ class GameScene extends Phaser.Scene {
     const imageScale = HEIGHT / 724;
     const layerWidth = 2172 * imageScale;
 
-    // Chapters 2-4 gain a far identity layer from the generated chapter art,
-    // crawling behind the original stack. Arrival stays purely original.
-    if (this.level.id !== 'arrival') {
-      const textureKey = `level-${this.level.id}`;
-      const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
-      const coverScale = Math.max(HEIGHT / source.height, WIDTH / source.width) * 1.18;
-      this.parallaxLayers.push({
-        texture: textureKey, images: [], width: source.width * coverScale,
-        scale: coverScale, rate: .05, depth: -35, alpha: .92, tint,
-      });
+    if (this.level.id === 'arrival') {
+      // Arrival keeps the original Malaysian parallax stack, palette-tinted.
+      this.parallaxLayers.push(
+        { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: 1, tint },
+        { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: .88, tint },
+        { texture: 'malaysia-foreground', images: [], width: layerWidth, scale: imageScale, rate: .46, depth: .5, alpha: .82, tint },
+      );
+    } else {
+      // Each chapter owns a unique generated stack: an opaque background plus
+      // three transparent parallax layers. Scaled so the art height fills the
+      // 540px play band; full-colour, so no palette tint is applied.
+      const addGenerated = (key: string, rate: number, depth: number) => {
+        const source = this.textures.get(key).getSourceImage() as HTMLImageElement;
+        const scale = HEIGHT / source.height;
+        this.parallaxLayers.push({ texture: key, images: [], width: source.width * scale, scale, rate, depth, alpha: 1, tint: 0xffffff });
+      };
+      addGenerated(`${this.level.id}-bg`, .05, -35);
+      addGenerated(`${this.level.id}-far`, .08, -30);
+      addGenerated(`${this.level.id}-mid`, .24, -20);
+      addGenerated(`${this.level.id}-near`, .46, .5);
     }
-
-    this.parallaxLayers.push(
-      { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: this.level.id === 'arrival' ? 1 : .72, tint },
-      { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: this.level.id === 'arrival' ? .88 : .62, tint },
-      { texture: 'malaysia-foreground', images: [], width: layerWidth, scale: imageScale, rate: .46, depth: .5, alpha: .82, tint },
-    );
 
     // Minimal abyss: a WORLD-space gradient below the ground line. World space
     // means it scales and aligns with the camera at any zoom, and it is drawn
