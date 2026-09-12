@@ -136,8 +136,9 @@ class GameScene extends Phaser.Scene {
   private levelIndex = 0;
   private progress: PlayerProgress = withDevUnlocks(loadProgress(LEVELS.map(l => l.id)));
   private parallaxLayers: ParallaxLayer[] = [];
-  /** World-space vertical margin above/below the 540px play band (centers it). */
+  /** World-space vertical margin above the 540px play band (band sits low). */
   private bandOffset = 0;
+  private skyGfx!: Phaser.GameObjects.Graphics;
   private resizeTimer?: number;
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
@@ -430,6 +431,11 @@ class GameScene extends Phaser.Scene {
     const palette = this.level.palette;
     this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
 
+    // Full-background sky gradient (behind the parallax). Filled to the band top
+    // at layout time so the space above the play area reads as sky, not a flat
+    // palette color.
+    this.skyGfx = this.add.graphics().setScrollFactor(0).setDepth(-60);
+
     this.parallaxLayers = [];
     const tint = palette.tint;
 
@@ -483,10 +489,13 @@ class GameScene extends Phaser.Scene {
       if (fitZoom >= step - 1e-4) { zoom = step; break; }
     }
     camera.setZoom(zoom);
-    this.bandOffset = Math.max(0, (this.scale.height / zoom - HEIGHT) / 2);
+    // Anchor the band to the bottom so all spare vertical space is sky above the
+    // play area (matching the original framing) rather than void below it.
+    this.bandOffset = Math.max(0, this.scale.height / zoom - HEIGHT);
     camera.setBounds(0, -this.bandOffset, this.level.worldWidth, HEIGHT);
     this.layoutParallax();
     this.positionParallax();
+    this.redrawSky();
     if (import.meta.env.DEV) {
       console.debug('[echofall-layout]', {
         viewport: `${this.scale.width}x${this.scale.height}`,
@@ -534,6 +543,22 @@ class GameScene extends Phaser.Scene {
         image.y = originY + (bandTopScreen - originY) / zoom;
       }
     });
+  }
+
+  /** Paints the sky gradient across the spare space above the play band. */
+  private redrawSky() {
+    const camera = this.cameras.main;
+    const zoom = camera.zoom;
+    const originX = camera.width * camera.originX;
+    const originY = camera.height * camera.originY;
+    const toLocalX = (screenX: number) => originX + (screenX - originX) / zoom;
+    const toLocalY = (screenY: number) => originY + (screenY - originY) / zoom;
+    const skyScreenHeight = this.bandOffset * zoom;
+    const palette = this.level.palette;
+    this.skyGfx.clear();
+    if (skyScreenHeight <= 0) return;
+    this.skyGfx.fillGradientStyle(palette.skyTop, palette.skyTop, palette.skyBottom, palette.skyBottom, 1);
+    this.skyGfx.fillRect(toLocalX(0), toLocalY(0), this.scale.width / zoom, skyScreenHeight / zoom);
   }
 
   private onResize() {
