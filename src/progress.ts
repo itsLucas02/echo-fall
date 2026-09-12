@@ -108,10 +108,11 @@ export function recordCompletion(
     best: { ...progress.best, [levelId]: isBest ? { ms: Math.round(milliseconds), shards } : previous! },
   };
   let unlockedNext = false;
-  if (levelIndex + 1 < levelCount && next.unlocked < levelIndex + 1) {
-    next.unlocked = levelIndex + 1;
-    next.current = levelIndex + 1;
-    unlockedNext = true;
+  if (levelIndex + 1 < levelCount) {
+    const nextIndex = levelIndex + 1;
+    unlockedNext = next.unlocked < nextIndex;
+    next.unlocked = Math.max(next.unlocked, nextIndex);
+    next.current = nextIndex;
   }
   saveProgress(next, storage);
   return { progress: next, isBest, unlockedNext };

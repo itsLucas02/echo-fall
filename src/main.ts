@@ -107,9 +107,16 @@ const ui = {
 /** Shared touch state; the scene reads it alongside the keyboard every frame. */
 const touch = { left: false, right: false, jumpHeld: false };
 
+/**
+ * Debug convenience: in dev builds every chapter is selectable from the menu so
+ * a level can be tested without replaying the run. Never applied in production.
+ */
+const withDevUnlocks = (progress: PlayerProgress): PlayerProgress =>
+  import.meta.env.DEV ? { ...progress, unlocked: LEVELS.length - 1 } : progress;
+
 class GameScene extends Phaser.Scene {
   private levelIndex = 0;
-  private progress: PlayerProgress = loadProgress(LEVELS.map(l => l.id));
+  private progress: PlayerProgress = withDevUnlocks(loadProgress(LEVELS.map(l => l.id)));
   private parallaxLayers: ParallaxLayer[] = [];
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
@@ -709,7 +716,8 @@ class GameScene extends Phaser.Scene {
           body.setImmovable(true).setSize(26, 20).setOffset(2, 2);
           break;
         case 'spitter':
-          body.setImmovable(true).setSize(24, 30).setOffset(3, 3);
+          body.setSize(24, 30).setOffset(3, 3);
+          body.pushable = false;
           enemy.setData('nextShot', 1200);
           break;
         case 'charger':
@@ -718,7 +726,8 @@ class GameScene extends Phaser.Scene {
           break;
         case 'warden':
           enemy.setCollideWorldBounds(true).setData('hp', 3).setData('state', 'patrol').setData('dir', -1);
-          body.setImmovable(true).setSize(42, 30).setOffset(3, 5);
+          body.setSize(42, 30).setOffset(3, 5);
+          body.pushable = false;
           break;
       }
     });
@@ -816,6 +825,7 @@ class GameScene extends Phaser.Scene {
   private updateShurikens(time: number) {
     for (let i = this.shurikens.length - 1; i >= 0; i -= 1) {
       const star = this.shurikens[i];
+      if (!star.active || !star.body) { this.shurikens.splice(i, 1); continue; }
       star.rotation += .5;
       if (time - (star.getData('bornAt') as number) > 1400 || Math.abs(star.x - this.player.x) > 640) {
         this.destroyShuriken(star);
@@ -825,6 +835,7 @@ class GameScene extends Phaser.Scene {
 
   private onShurikenHitEnemy(star: Phaser.Physics.Arcade.Image, enemyObject: Phaser.Physics.Arcade.Sprite) {
     const enemy = enemyObject;
+    if (!star.active) return;
     if (!enemy.getData('alive')) return;
     const hitX = star.x;
     const hitY = star.y;
@@ -864,7 +875,9 @@ class GameScene extends Phaser.Scene {
       this.tweens.add({ targets: ui.shard, scale: 1.16, duration: 90, yoyo: true });
     });
     this.physics.add.collider(this.projectiles, this.platforms, (orb) => this.popProjectile(orb as Phaser.Physics.Arcade.Image));
-    this.physics.add.overlap(this.projectiles, this.player, (orb) => {
+    // Sprite-vs-group callbacks always receive the sprite (player) first, then
+    // the group member (orb) — even though the group is registered first here.
+    this.physics.add.overlap(this.projectiles, this.player, (_player, orb) => {
       this.popProjectile(orb as Phaser.Physics.Arcade.Image);
       this.hurtPlayer();
     });
@@ -1133,6 +1146,7 @@ class GameScene extends Phaser.Scene {
 
   /** Distance/direction attenuation for positional sound, relative to the player. */
   private spatial(x: number, maxDistance = 900): { volume: number; pan: number } {
+    if (!Number.isFinite(x) || !Number.isFinite(this.player.x)) return { volume: 0, pan: 0 };
     const dx = x - this.player.x;
     const distance = Math.abs(dx);
     return {
@@ -1446,25 +1460,27 @@ class GameScene extends Phaser.Scene {
   // ─────────────────────────────────────────────────────────────
 
   private updateEnemies(time: number) {
-    this.groundEnemies.children.iterate(child => {
-      const enemy = child as Phaser.Physics.Arcade.Sprite;
-      if (!enemy.active) return true;
+    // Iterate snapshots: these loops may disable/enable bodies, and any future
+    // destroy() call would otherwise corrupt a live Set.iterate().
+    const ground = (this.groundEnemies.getChildren() as Phaser.Physics.Arcade.Sprite[]).slice();
+    for (let i = 0; i < ground.length; i += 1) {
+      const enemy = ground[i];
+      if (!enemy.active) continue;
       const body = enemy.body as Phaser.Physics.Arcade.Body;
-      if (enemy.y > HEIGHT + 160) { enemy.disableBody(true, true); return true; }
+      if (enemy.y > HEIGHT + 160) { enemy.disableBody(true, true); continue; }
       switch (enemy.getData('kind')) {
         case 'crawler': this.updateCrawler(enemy, body, time); break;
         case 'spitter': this.updateSpitter(enemy, body, time); break;
         case 'charger': this.updateCharger(enemy, body, time); break;
         case 'warden': this.updateWarden(enemy, body, time); break;
       }
-      return true;
-    });
-    this.airEnemies.children.iterate(child => {
-      const enemy = child as Phaser.Physics.Arcade.Sprite;
-      if (!enemy.active) return true;
+    }
+    const air = (this.airEnemies.getChildren() as Phaser.Physics.Arcade.Sprite[]).slice();
+    for (let i = 0; i < air.length; i += 1) {
+      const enemy = air[i];
+      if (!enemy.active) continue;
       this.updateFlyer(enemy, enemy.body as Phaser.Physics.Arcade.Body, time);
-      return true;
-    });
+    }
   }
 
   private patrolFlip(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, speed: number) {
@@ -1520,18 +1536,21 @@ class GameScene extends Phaser.Scene {
   }
 
   private updateProjectiles(time: number) {
-    this.projectiles.children.iterate(child => {
-      const orb = child as Phaser.Physics.Arcade.Image;
-      if (!orb.active) return true;
-      if (time - (orb.getData('born') as number) > 3200) { orb.destroy(); return true; }
+    // Snapshot the children: destroying an orb removes it from the group's
+    // backing Set, and Phaser's Set.iterate() indexes that live array while
+    // holding a stale length — mutating it mid-iterate throws on `undefined`.
+    const orbs = (this.projectiles.getChildren() as Phaser.Physics.Arcade.Image[]).slice();
+    for (let i = 0; i < orbs.length; i += 1) {
+      const orb = orbs[i];
+      if (!orb.active || !orb.body) continue;
+      if (time - (orb.getData('born') as number) > 3200) { orb.destroy(); continue; }
       orb.rotation += .12;
       if (this.echoActive() && Phaser.Geom.Rectangle.Overlaps(orb.getBounds(), this.echo!.getBounds())) {
         audio.play('chime');
         this.sparkle.explode(5, orb.x, orb.y);
         orb.destroy();
       }
-      return true;
-    });
+    }
   }
 
   private updateCharger(enemy: Phaser.Physics.Arcade.Sprite, body: Phaser.Physics.Arcade.Body, time: number) {
@@ -1636,14 +1655,14 @@ class GameScene extends Phaser.Scene {
   }
 
   private updateShards(time: number) {
-    this.shards.children.iterate(child => {
-      const shard = child as Phaser.Physics.Arcade.Sprite;
-      if (!shard.active) return true;
+    const shards = (this.shards.getChildren() as Phaser.Physics.Arcade.Sprite[]).slice();
+    for (let i = 0; i < shards.length; i += 1) {
+      const shard = shards[i];
+      if (!shard.active) continue;
       shard.setAngle((time / 25 + shard.getData('phase') * 50) % 360);
       shard.y = shard.getData('baseY') + Math.sin(time / 350 + shard.getData('phase')) * 5;
       shard.refreshBody();
-      return true;
-    });
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1717,7 +1736,7 @@ class GameScene extends Phaser.Scene {
 
   startGame() {
     // Chips may have changed the selection after this scene loaded its copy.
-    this.progress = loadProgress(LEVELS.map(l => l.id));
+    this.progress = withDevUnlocks(loadProgress(LEVELS.map(l => l.id)));
     this.launchLevel(this.progress.current);
   }
 
@@ -1827,7 +1846,7 @@ function renderChips(progress: PlayerProgress) {
   });
   ui.begin.textContent = progress.best[LEVELS[progress.current].id] ? `CONTINUE — ${LEVELS[progress.current].name.toUpperCase()}` : `BEGIN — ${LEVELS[progress.current].name.toUpperCase()}`;
 }
-renderChips(loadProgress(LEVELS.map(l => l.id)));
+renderChips(withDevUnlocks(loadProgress(LEVELS.map(l => l.id))));
 
 // The scene loads the same persisted progress itself, so both stay in sync.
 
@@ -1899,4 +1918,23 @@ if (fullscreenButton && document.fullscreenEnabled) {
 
 if (import.meta.env.DEV) {
   (window as typeof window & { __echofall?: Phaser.Game }).__echofall = game;
+
+  // Surface any uncaught frame error on-screen so a freeze reports its cause
+  // instead of silently stopping the render loop.
+  let reported = false;
+  const reportError = (title: string, detail: string) => {
+    if (reported) return;
+    reported = true;
+    const box = document.createElement('pre');
+    box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;margin:0;padding:10px 14px;max-height:45vh;overflow:auto;white-space:pre-wrap;background:rgba(130,25,25,.95);color:#fff;font:12px/1.5 monospace';
+    box.textContent = `[Echofall] ${title}\n${detail}`;
+    document.body.appendChild(box);
+    console.error(title, detail);
+  };
+  window.addEventListener('error', event => {
+    reportError(event.message, `${event.filename}:${event.lineno}:${event.colno}\n${event.error?.stack ?? ''}`);
+  });
+  window.addEventListener('unhandledrejection', event => {
+    reportError('Unhandled promise rejection', `${event.reason?.stack ?? String(event.reason)}`);
+  });
 }

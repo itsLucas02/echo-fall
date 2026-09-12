@@ -108,6 +108,7 @@ export class AudioDirector {
     const volume = Math.min(1.15, Math.max(0, options.volume ?? 1));
     if (volume <= .02) return;
     const pan = Math.min(1, Math.max(-1, options.pan ?? 0));
+    if (!Number.isFinite(volume) || !Number.isFinite(pan)) return;
     switch (cue) {
       case 'jump':
         this.tone(310, .13, 'triangle', .1 * volume, 540, 0, pan);
@@ -276,6 +277,7 @@ export class AudioDirector {
     lowpass?: number,
   ) {
     if (!this.context) return;
+    if (!Number.isFinite(frequency) || !Number.isFinite(duration) || !Number.isFinite(volume) || !Number.isFinite(delay)) return;
     const now = this.context.currentTime + delay;
     const oscillator = this.context.createOscillator();
     const gain = this.context.createGain();
@@ -303,6 +305,7 @@ export class AudioDirector {
 
   private noise(duration: number, volume: number, cutoff: number, pan = 0, _unusedHighpass?: number) {
     if (!this.context) return;
+    if (!Number.isFinite(duration) || !Number.isFinite(volume) || !Number.isFinite(cutoff)) return;
     const now = this.context.currentTime;
     const source = this.context.createBufferSource();
     source.buffer = this.getNoiseBuffer();
@@ -323,6 +326,7 @@ export class AudioDirector {
   /** Filtered noise sweep — whooshes, swoops, throws. */
   private whoosh(startCutoff: number, endCutoff: number, duration: number, volume: number, pan = 0) {
     if (!this.context) return;
+    if (!Number.isFinite(startCutoff) || !Number.isFinite(endCutoff) || !Number.isFinite(duration) || !Number.isFinite(volume)) return;
     const now = this.context.currentTime;
     const source = this.context.createBufferSource();
     source.buffer = this.getNoiseBuffer();
@@ -346,6 +350,7 @@ export class AudioDirector {
   /** Body impact: sub-bass drop plus a soft noise transient. */
   private thump(frequency: number, duration: number, volume: number, pan = 0) {
     if (!this.context) return;
+    if (!Number.isFinite(frequency) || !Number.isFinite(duration) || !Number.isFinite(volume)) return;
     const now = this.context.currentTime;
     const oscillator = this.context.createOscillator();
     const gain = this.context.createGain();
