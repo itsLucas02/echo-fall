@@ -21,6 +21,13 @@ const WIDTH = 960;
 const HEIGHT = 540;
 const GROUND_Y = 486;
 const ECHO_DURATION_MS = 7000;
+/**
+ * Responsive zoom policy: render at 1:1 and never upscale, downscaling only
+ * when the viewport is shorter than the design height. Zoom snaps down to these
+ * steps so `pixelArt` stays even (no shimmer).
+ */
+const ZOOM_STEPS = [1, 0.8, 2 / 3, 0.5] as const;
+const MIN_ZOOM = 0.5;
 const audio = new AudioDirector();
 
 type BarrierBody = { rect: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
@@ -80,7 +87,18 @@ interface PendulumDevice {
   x: number; pivotY: number; length: number; period: number; phase: number; amplitude: number;
 }
 interface WindDevice { zone: Phaser.Geom.Rectangle; fx: number }
-interface ParallaxLayer { images: Phaser.GameObjects.Image[]; width: number; rate: number }
+interface ParallaxLayer {
+  texture: string;
+  images: Phaser.GameObjects.Image[];
+  /** World-space width of a single tile (before camera zoom). */
+  width: number;
+  /** World-space image scale (art height spans the 540px play band). */
+  scale: number;
+  rate: number;
+  depth: number;
+  alpha: number;
+  tint: number;
+}
 
 const ui = {
   start: document.querySelector<HTMLElement>('#start-screen')!,
@@ -118,6 +136,9 @@ class GameScene extends Phaser.Scene {
   private levelIndex = 0;
   private progress: PlayerProgress = withDevUnlocks(loadProgress(LEVELS.map(l => l.id)));
   private parallaxLayers: ParallaxLayer[] = [];
+  /** World-space vertical margin above/below the 540px play band (centers it). */
+  private bandOffset = 0;
+  private resizeTimer?: number;
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
   private groundEnemies!: Phaser.Physics.Arcade.Group;
@@ -228,7 +249,6 @@ class GameScene extends Phaser.Scene {
     );
     this.physics.world.setBoundsCollision(true, true, true, false);
     this.physics.world.setBounds(0, 0, this.level.worldWidth, HEIGHT);
-    this.cameras.main.setBounds(0, 0, this.level.worldWidth, HEIGHT);
     ui.message.classList.remove('visible');
     ui.shard.textContent = `0 / ${this.totalShards}`;
     ui.timer.textContent = '00:00.0';
@@ -252,6 +272,10 @@ class GameScene extends Phaser.Scene {
     this.echoGfx = this.add.graphics().setDepth(9);
     this.cameras.main.startFollow(this.player, true, 0.085, 0.085, -120, 50);
     this.cameras.main.setDeadzone(210, 90);
+    this.applyResponsiveLayout();
+    this.scale.off('resize', this.onResize, this);
+    this.scale.on('resize', this.onResize, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off('resize', this.onResize, this));
     this.showLevelBanner();
     if (!this.hasEverStarted) this.scene.pause();
   }
@@ -406,18 +430,14 @@ class GameScene extends Phaser.Scene {
     const palette = this.level.palette;
     this.cameras.main.setBackgroundColor(`#${palette.sky.toString(16).padStart(6, '0')}`);
 
+    this.parallaxLayers = [];
+    const tint = palette.tint;
+
     // The original Malaysian parallax stack — skyline, architecture, foliage —
-    // runs on every chapter. Arrival keeps it exactly as shipped.
+    // runs on every chapter. Arrival keeps it exactly as shipped. Tiles are
+    // created lazily in layoutParallax() to match the live viewport width.
     const imageScale = HEIGHT / 724;
     const layerWidth = 2172 * imageScale;
-    const addLayer = (texture: string, rate: number, depth: number, alpha = 1) => {
-      const images = [0, layerWidth].map(x => this.add.image(x, 0, texture)
-        .setOrigin(0).setScrollFactor(0).setScale(imageScale).setDepth(depth).setAlpha(alpha));
-      if (palette.tint !== 0xffffff) images.forEach(image => image.setTint(palette.tint));
-      this.parallaxLayers.push({ images, width: layerWidth, rate });
-    };
-
-    this.parallaxLayers = [];
 
     // Chapters 2-4 gain a far identity layer from the generated chapter art,
     // crawling behind the original stack. Arrival stays purely original.
@@ -425,30 +445,100 @@ class GameScene extends Phaser.Scene {
       const textureKey = `level-${this.level.id}`;
       const source = this.textures.get(textureKey).getSourceImage() as HTMLImageElement;
       const coverScale = Math.max(HEIGHT / source.height, WIDTH / source.width) * 1.18;
-      const backdropWidth = source.width * coverScale;
-      const backdrop = [0, backdropWidth].map(x => this.add.image(x, 0, textureKey)
-        .setOrigin(0).setScrollFactor(0).setScale(coverScale).setDepth(-35).setAlpha(.92));
-      if (palette.tint !== 0xffffff) backdrop.forEach(image => image.setTint(palette.tint));
-      this.parallaxLayers.push({ images: backdrop, width: backdropWidth, rate: .05 });
+      this.parallaxLayers.push({
+        texture: textureKey, images: [], width: source.width * coverScale,
+        scale: coverScale, rate: .05, depth: -35, alpha: .92, tint,
+      });
     }
 
-    addLayer('malaysia-skyline', .08, -30, this.level.id === 'arrival' ? 1 : .72);
-    addLayer('malaysia-midground', .24, -20, this.level.id === 'arrival' ? .88 : .62);
-    addLayer('malaysia-foreground', .46, .5, .82);
+    this.parallaxLayers.push(
+      { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: this.level.id === 'arrival' ? 1 : .72, tint },
+      { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: this.level.id === 'arrival' ? .88 : .62, tint },
+      { texture: 'malaysia-foreground', images: [], width: layerWidth, scale: imageScale, rate: .46, depth: .5, alpha: .82, tint },
+    );
 
-    // The void: a clean, quiet fade — deep gradient plus a brass edge light.
-    const abyss = this.add.graphics().setScrollFactor(0).setDepth(.75);
-    const viewportRight = Math.max(WIDTH, this.scale.width);
-    const viewportBottom = Math.max(HEIGHT * 4, this.scale.height);
+    // Minimal abyss: a WORLD-space gradient below the ground line. World space
+    // means it scales and aligns with the camera at any zoom, and it is drawn
+    // deep and wide enough to fill the margin around the centered play band.
+    const abyss = this.add.graphics().setDepth(.75);
+    const abyssX = -WIDTH;
+    const abyssWidth = this.level.worldWidth + WIDTH * 2;
     const deep = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(38).color;
     const deeper = Phaser.Display.Color.IntegerToColor(palette.abyss).darken(72).color;
-    abyss.fillStyle(palette.abyss, .68).fillRect(0, GROUND_Y + 6, viewportRight, 30);
-    abyss.fillStyle(palette.abyss, .88).fillRect(0, GROUND_Y + 36, viewportRight, 46);
-    abyss.fillStyle(deep, .95).fillRect(0, GROUND_Y + 82, viewportRight, 150);
-    abyss.fillStyle(deeper, .98).fillRect(0, GROUND_Y + 232, viewportRight, viewportBottom - GROUND_Y - 232);
+    abyss.fillStyle(palette.abyss, .68).fillRect(abyssX, GROUND_Y + 6, abyssWidth, 30);
+    abyss.fillStyle(palette.abyss, .88).fillRect(abyssX, GROUND_Y + 36, abyssWidth, 46);
+    abyss.fillStyle(deep, .95).fillRect(abyssX, GROUND_Y + 82, abyssWidth, 150);
+    abyss.fillStyle(deeper, .98).fillRect(abyssX, GROUND_Y + 232, abyssWidth, 2600);
     // Thin brass rim hugging the ground line, then nothing but depth.
-    abyss.fillStyle(0xe0a85a, .22).fillRect(0, GROUND_Y + 6, viewportRight, 2);
-    abyss.fillStyle(0x88b6a3, .1).fillRect(0, GROUND_Y + 40, viewportRight, 1);
+    abyss.fillStyle(0xe0a85a, .22).fillRect(abyssX, GROUND_Y + 6, abyssWidth, 2);
+    abyss.fillStyle(0x88b6a3, .1).fillRect(abyssX, GROUND_Y + 40, abyssWidth, 1);
+  }
+
+  /** Recomputes zoom, centers the 540px play band, and refits the parallax. */
+  private applyResponsiveLayout() {
+    const camera = this.cameras.main;
+    const fitZoom = Phaser.Math.Clamp(this.scale.height / HEIGHT, MIN_ZOOM, 1);
+    let zoom: number = MIN_ZOOM;
+    for (const step of ZOOM_STEPS) {
+      if (fitZoom >= step - 1e-4) { zoom = step; break; }
+    }
+    camera.setZoom(zoom);
+    this.bandOffset = Math.max(0, (this.scale.height / zoom - HEIGHT) / 2);
+    camera.setBounds(0, -this.bandOffset, this.level.worldWidth, HEIGHT);
+    this.layoutParallax();
+    this.positionParallax();
+    if (import.meta.env.DEV) {
+      console.debug('[echofall-layout]', {
+        viewport: `${this.scale.width}x${this.scale.height}`,
+        zoom, bandOffset: Math.round(this.bandOffset),
+      });
+    }
+  }
+
+  /** Creates/destroys parallax tiles so they always cover the viewport width. */
+  private layoutParallax() {
+    const camera = this.cameras.main;
+    const viewportWidth = this.scale.width;
+    this.parallaxLayers.forEach(layer => {
+      const tileScreenWidth = Math.max(1, layer.width * camera.zoom);
+      const needed = Math.max(2, Math.ceil(viewportWidth / tileScreenWidth) + 2);
+      while (layer.images.length < needed) {
+        const image = this.add.image(0, 0, layer.texture).setOrigin(0)
+          .setScrollFactor(0).setScale(layer.scale).setDepth(layer.depth).setAlpha(layer.alpha);
+        if (layer.tint !== 0xffffff) image.setTint(layer.tint);
+        layer.images.push(image);
+      }
+      while (layer.images.length > needed) layer.images.pop()?.destroy();
+    });
+  }
+
+  /**
+   * Pins the scroll-factor-0 parallax tiles to the screen. The camera folds zoom
+   * around its origin, so a scroll-factor-0 object at `o` renders at
+   * `origin + (o - origin) * zoom`; we invert that mapping per tile.
+   */
+  private positionParallax() {
+    const camera = this.cameras.main;
+    const zoom = camera.zoom;
+    const originX = camera.width * camera.originX;
+    const originY = camera.height * camera.originY;
+    const bandTopScreen = this.bandOffset * zoom;
+    this.parallaxLayers.forEach(layer => {
+      const tileScreenWidth = layer.width * zoom;
+      const wrapped = ((camera.scrollX * layer.rate) % layer.width + layer.width) % layer.width;
+      const offsetScreen = -wrapped * zoom;
+      for (let i = 0; i < layer.images.length; i += 1) {
+        const screenX = offsetScreen + i * tileScreenWidth;
+        const image = layer.images[i];
+        image.x = originX + (screenX - originX) / zoom;
+        image.y = originY + (bandTopScreen - originY) / zoom;
+      }
+    });
+  }
+
+  private onResize() {
+    if (this.resizeTimer !== undefined) window.clearTimeout(this.resizeTimer);
+    this.resizeTimer = window.setTimeout(() => this.applyResponsiveLayout(), 120);
   }
 
   private addPlatform(x: number, y: number, width: number, height = 28) {
@@ -961,12 +1051,7 @@ class GameScene extends Phaser.Scene {
   // ─────────────────────────────────────────────────────────────
 
   update(time: number, delta: number) {
-    const cameraX = this.cameras.main.scrollX;
-    this.parallaxLayers.forEach(layer => {
-      const offset = -(cameraX * layer.rate % layer.width);
-      layer.images[0].x = offset;
-      layer.images[1].x = offset + layer.width;
-    });
+    this.positionParallax();
     if (!this.gameStarted || this.gameEnded || this.paused) return;
     this.runElapsedMs += delta;
     const timerTick = Math.floor(this.runElapsedMs / 100);
@@ -1798,7 +1883,7 @@ const game = new Phaser.Game({
   roundPixels: true,
   audio: { noAudio: true },
   physics: { default: 'arcade', arcade: { gravity: { x: 0, y: 1050 }, debug: false } },
-  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: GameScene,
 });
 
