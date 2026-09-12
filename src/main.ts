@@ -697,6 +697,8 @@ class GameScene extends Phaser.Scene {
       const enemy = (flying ? this.airEnemies : this.groundEnemies).create(spec.x, spec.y, spec.kind) as Phaser.Physics.Arcade.Sprite;
       enemy.setData('kind', spec.kind).setData('alive', true).setData('index', index).setData('anchorX', spec.x).setData('anchorY', spec.y).setData('phase', index * 1.7);
       enemy.setDepth(7);
+      if (spec.minX !== undefined) enemy.setData('minX', spec.minX);
+      if (spec.maxX !== undefined) enemy.setData('maxX', spec.maxX);
       const body = enemy.body as Phaser.Physics.Arcade.Body;
       switch (spec.kind) {
         case 'crawler':
@@ -1583,8 +1585,13 @@ class GameScene extends Phaser.Scene {
         audio.play('growl', this.spatial(enemy.x, 760));
       }
       const dir = target.x < enemy.x ? -1 : 1;
-      enemy.setData('dir', dir);
-      body.setVelocityX(dir * (150 + (3 - hp) * 28));
+      const minX = enemy.getData('minX') as number | undefined;
+      const maxX = enemy.getData('maxX') as number | undefined;
+      const atMin = minX !== undefined && enemy.x <= minX;
+      const atMax = maxX !== undefined && enemy.x >= maxX;
+      const step = atMin && dir < 0 ? 0 : atMax && dir > 0 ? 0 : dir;
+      enemy.setData('dir', step);
+      body.setVelocityX(step * (150 + (3 - hp) * 28));
       enemy.setFlipX(dir > 0);
       if (time >= (enemy.getData('nextStep') ?? 0)) {
         enemy.setData('nextStep', time + 620);
