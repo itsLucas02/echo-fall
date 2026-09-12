@@ -139,6 +139,7 @@ class GameScene extends Phaser.Scene {
   /** World-space vertical margin above the 540px play band (band sits low). */
   private bandOffset = 0;
   private skyGfx!: Phaser.GameObjects.Graphics;
+  private fadeGfx!: Phaser.GameObjects.Graphics;
   private resizeTimer?: number;
   private player!: Phaser.Physics.Arcade.Sprite;
   private platforms!: Phaser.Physics.Arcade.StaticGroup;
@@ -435,6 +436,9 @@ class GameScene extends Phaser.Scene {
     // at layout time so the space above the play area reads as sky, not a flat
     // palette color.
     this.skyGfx = this.add.graphics().setScrollFactor(0).setDepth(-60);
+    // Edge fades sit above the parallax but below the platforms/player, so the
+    // art dissolves into the sky/void at the band edges instead of a hard line.
+    this.fadeGfx = this.add.graphics().setScrollFactor(0).setDepth(.9);
 
     this.parallaxLayers = [];
     const tint = palette.tint;
@@ -503,6 +507,7 @@ class GameScene extends Phaser.Scene {
     this.layoutParallax();
     this.positionParallax();
     this.redrawSky();
+    this.redrawFade();
     if (import.meta.env.DEV) {
       console.debug('[echofall-layout]', {
         viewport: `${this.scale.width}x${this.scale.height}`,
@@ -566,6 +571,32 @@ class GameScene extends Phaser.Scene {
     if (skyScreenHeight <= 0) return;
     this.skyGfx.fillGradientStyle(palette.skyTop, palette.skyTop, palette.skyBottom, palette.skyBottom, 1);
     this.skyGfx.fillRect(toLocalX(0), toLocalY(0), this.scale.width / zoom, skyScreenHeight / zoom);
+  }
+
+  /**
+   * Softens the top/bottom edges of the play band: the art fades up into the sky
+   * colour and down into the abyss colour, so the band edges don't read as hard
+   * letterbox lines.
+   */
+  private redrawFade() {
+    const camera = this.cameras.main;
+    const zoom = camera.zoom;
+    const originX = camera.width * camera.originX;
+    const originY = camera.height * camera.originY;
+    const toLocalX = (screenX: number) => originX + (screenX - originX) / zoom;
+    const toLocalY = (screenY: number) => originY + (screenY - originY) / zoom;
+    const g = this.fadeGfx;
+    g.clear();
+    const bandTopScreen = this.bandOffset * zoom;
+    const bandBottomScreen = (this.bandOffset + HEIGHT) * zoom;
+    const fadeScreen = Math.min(120, (bandBottomScreen - bandTopScreen) * 0.22);
+    if (fadeScreen < 1 || bandTopScreen <= 0) return;
+    const width = this.scale.width / zoom;
+    const palette = this.level.palette;
+    g.fillGradientStyle(palette.skyBottom, palette.skyBottom, palette.skyBottom, palette.skyBottom, 1, 1, 0, 0);
+    g.fillRect(toLocalX(0), toLocalY(bandTopScreen), width, fadeScreen / zoom);
+    g.fillGradientStyle(palette.abyss, palette.abyss, palette.abyss, palette.abyss, 0, 0, 1, 1);
+    g.fillRect(toLocalX(0), toLocalY(bandBottomScreen - fadeScreen), width, fadeScreen / zoom);
   }
 
   private onResize() {
