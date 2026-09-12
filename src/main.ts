@@ -98,6 +98,8 @@ interface ParallaxLayer {
   depth: number;
   alpha: number;
   tint: number;
+  /** Alternate-flip tiles so edges meet even when the source isn't seamless. */
+  mirror: boolean;
 }
 
 const ui = {
@@ -460,9 +462,9 @@ class GameScene extends Phaser.Scene {
     if (this.level.id === 'arrival') {
       // Arrival keeps the original Malaysian parallax stack, palette-tinted.
       this.parallaxLayers.push(
-        { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: 1, tint },
-        { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: .88, tint },
-        { texture: 'malaysia-foreground', images: [], width: layerWidth, scale: imageScale, rate: .46, depth: .5, alpha: .82, tint },
+        { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: 1, tint, mirror: false },
+        { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: .88, tint, mirror: false },
+        { texture: 'malaysia-foreground', images: [], width: layerWidth, scale: imageScale, rate: .46, depth: .5, alpha: .82, tint, mirror: false },
       );
     } else {
       // Each chapter owns a unique generated stack: an opaque background plus
@@ -471,7 +473,7 @@ class GameScene extends Phaser.Scene {
       const addGenerated = (key: string, rate: number, depth: number) => {
         const source = this.textures.get(key).getSourceImage() as HTMLImageElement;
         const scale = HEIGHT / source.height;
-        this.parallaxLayers.push({ texture: key, images: [], width: source.width * scale, scale, rate, depth, alpha: 1, tint: 0xffffff });
+        this.parallaxLayers.push({ texture: key, images: [], width: source.width * scale, scale, rate, depth, alpha: 1, tint: 0xffffff, mirror: true });
       };
       addGenerated(`${this.level.id}-bg`, .05, -35);
       addGenerated(`${this.level.id}-far`, .08, -30);
@@ -565,6 +567,7 @@ class GameScene extends Phaser.Scene {
         const image = layer.images[i];
         image.x = originX + (screenX - originX) / zoom;
         image.y = originY + (bandTopScreen - originY) / zoom;
+        if (layer.mirror) image.setFlipX(i % 2 === 1);
       }
     });
   }
