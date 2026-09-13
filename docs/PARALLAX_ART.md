@@ -32,7 +32,7 @@ re-deriving anything.
 | Batu Caverns | `caverns` | `caverns-bg/far/mid/near.webp` | Section 4.1 |
 | Tea Terraces | `terraces` | `terraces-bg/far/mid/near.webp` | Section 4.2 |
 | Merdeka Ascent | `ascent` | `ascent-bg/far/mid/near.webp` | Section 4.3 |
-| Arrival Gate | `arrival` | `malaysia-skyline/midground/foreground.webp` | original art |
+| Arrival Gate | `arrival` | `malaysia-skyline/midground/foreground.webp` | original Codex art (Section 4.4) |
 
 - `-bg` = opaque full scene (no alpha).
 - `-far` / `-mid` / `-near` = images with a **transparent** background; elements
@@ -208,14 +208,34 @@ Painterly digital matte painting mid-distance layer, cinematic, highly detailed.
 Painterly digital matte painting foreground / near layer, cinematic, highly detailed. Setting: dystopian overgrown Kuala Lumpur at dusk. CLOSE street-level buildings and infrastructure framing the bottom of the scene: weathered shophouse facades with Chinese and Tamil signage and awnings, a corner kopitiam, a five-foot-way colonnade, street lamps, tangled overhead utility cables, road barriers, a bus stop, a traffic light and a road drain - all abandoned and overgrown. Framed by dense tropical foliage along the very bottom: palm fronds, banana leaves, monstera, ferns, flowering shrubs and hanging vines, rim-lit by the last dusk light. This is the NEAREST layer: no skyscrapers, and do NOT include the Petronas Twin Towers, Merdeka 118, TRX or KL Tower. Occupies the bottom ~40% of the frame; upper area transparent. Muted purple palette with warm highlights. VERY wide panorama, base at bottom, top 15% crop-safe. HORIZONTALLY SEAMLESS/TILEABLE: left and right edges match exactly. PNG with TRANSPARENT background; otherwise flat pure-magenta #FF00FF background, no shadows/gradients. Minimum 1792x1024, prefer wider. No people, no text, watermark, logo, UI or border.
 ```
 
-### 4.4 Level 1 - ARRIVAL GATE (only if regenerated)
+### 4.4 Level 1 - ARRIVAL GATE (original Codex art, 3 layers)
 
-Arrival is **not** generated yet; it keeps the original Malaysian stack. If a set
-is wanted, use the shared rules with an **overgrown KL arrival-wards, misty teal**
-locale (day, palette `#7ca99c`): background = flooded vine-choked city entry;
-far = distant twisted skyline; mid = broken highways, archways, shophouses;
-near = tropical entry foliage. Follow the same 4-element structure and
-constraints as 4.1-4.3.
+Arrival is the **original template**, authored by **Codex 5.6 Sol**, and it ships
+unchanged. Unlike the other chapters it uses **three layers** (an opaque
+background + a mid parallax silhouette + foreground foliage) rather than four.
+
+These are the original prompts, kept **verbatim** as the reference art direction
+and for regenerating the chapter. Palette: teal, jade, aged brass, warm amber,
+subtle coral. The Petronas Twin Towers appear only in the background; both
+transparent layers explicitly exclude them.
+
+**1.1 - Background (opaque, 3072x1024)**
+```
+Create a 3072×1024 seamless horizontal parallax background for a polished 2D platform game set in Kuala Lumpur, Malaysia. Show the Petronas Twin Towers as recognizable distant landmarks, surrounded by a restrained city skyline, tropical monsoon haze, layered clouds, and warm late-afternoon light. Stylized hand-painted 2.5D game art, teal, jade, aged brass, warm amber, and subtle coral accents. Low contrast and restrained detail so foreground gameplay remains readable. No characters, text, logos, UI, watermark, borders, or imitation of an existing game. Fill the entire canvas with an opaque background.
+```
+
+**1.2 - Parallax layer (transparent, 3072x1024)**
+```
+Create a 3072×1024 transparent PNG parallax layer for a Malaysian-themed 2D platform game. Depict Kuala Lumpur rooftops, old shophouse silhouettes, railway arches, decorative street lamps, distant clockwork machinery, and subtle Malaysian batik geometric motifs integrated into the architecture. Stylized hand-painted 2.5D game art using teal, jade, aged brass, warm amber, and coral highlights. Strong readable silhouettes, moderate detail, horizontally seamless edges. Keep the upper half mostly transparent. No ground platform, characters, text, logos, UI, watermark, or Petronas Twin Towers.
+```
+
+**1.3 - Foreground foliage (transparent, 3072x1024)**
+```
+Create a 3072×1024 transparent PNG foreground parallax layer for a Malaysian-themed 2D platform game. Include dense tropical Malaysian foliage along only the bottom and extreme side edges: banana leaves, palms, ferns, hibiscus flowers, hanging vines, rain-worn brass pipes, small gears, and subtle batik-patterned ornaments. Stylized hand-painted 2.5D game art, crisp silhouettes, rich jade greens, aged brass, warm amber, teal shadows, and restrained coral flowers. Horizontally seamless composition. Keep the central gameplay area and most of the upper canvas transparent. No characters, platforms, text, logos, UI, watermark, or opaque background.
+```
+
+Note: this 3-layer structure is the template the other chapters extend (they split
+the mid layer into separate `far` and `mid` silhouettes for extra depth).
 
 ---
 
@@ -267,10 +287,11 @@ then scaled beyond 1:1, so enable `LINEAR` filtering on the background texture
 was replaced with compressed WebP (see Section 2). Originals remain in git
 history if ever needed.
 
-### 6.4 Arrival generated set (optional)
+### 6.4 Arrival regeneration (optional)
 
-Generate a unique 4-element set for Arrival Gate (see Section 4.4) if the original
-art should be replaced. Until then, Arrival remains the original Malaysian stack.
+The original Arrival art is the **3-layer template** (Codex 5.6 Sol) and ships
+as-is; its prompts are preserved in Section 4.4. Regenerate it only if a change is
+wanted, following that section.
 
 ---
 
