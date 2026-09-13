@@ -28,6 +28,9 @@ const ECHO_DURATION_MS = 7000;
  */
 const ZOOM_STEPS = [1, 0.8, 2 / 3, 0.5] as const;
 const MIN_ZOOM = 0.5;
+/** Screen-pixel overlap between parallax tiles so sub-pixel rounding can never
+ *  expose the canvas background as a hairline seam. */
+const TILE_OVERLAP = 3;
 const audio = new AudioDirector();
 
 type BarrierBody = { rect: Phaser.GameObjects.Rectangle; closedY: number; openY: number };
@@ -535,8 +538,8 @@ class GameScene extends Phaser.Scene {
     const camera = this.cameras.main;
     const viewportWidth = this.scale.width;
     this.parallaxLayers.forEach(layer => {
-      const tileScreenWidth = Math.max(1, layer.width * camera.zoom);
-      const needed = Math.max(2, Math.ceil(viewportWidth / tileScreenWidth) + 2);
+      const tileScreenWidth = Math.max(1, layer.width * camera.zoom - TILE_OVERLAP);
+      const needed = Math.max(2, Math.ceil(viewportWidth / tileScreenWidth) + 3);
       while (layer.images.length < needed) {
         const image = this.add.image(0, 0, layer.texture).setOrigin(0)
           .setScrollFactor(0).setScale(layer.scale).setDepth(layer.depth).setAlpha(layer.alpha);
@@ -559,11 +562,15 @@ class GameScene extends Phaser.Scene {
     const originY = camera.height * camera.originY;
     const bandTopScreen = this.bandOffset * zoom;
     this.parallaxLayers.forEach(layer => {
-      const tileScreenWidth = layer.width * zoom;
-      const wrapped = ((camera.scrollX * layer.rate) % layer.width + layer.width) % layer.width;
+      const periodScreen = Math.max(1, layer.width * zoom - TILE_OVERLAP);
+      const periodWorld = periodScreen / zoom;
+      // A mirrored pattern only repeats every two tiles (normal + flipped), so
+      // wrap on that full period or the image visibly jumps at each wrap.
+      const patternWorld = periodWorld * (layer.mirror ? 2 : 1);
+      const wrapped = ((camera.scrollX * layer.rate) % patternWorld + patternWorld) % patternWorld;
       const offsetScreen = -wrapped * zoom;
       for (let i = 0; i < layer.images.length; i += 1) {
-        const screenX = offsetScreen + i * tileScreenWidth;
+        const screenX = Math.round(offsetScreen + i * periodScreen);
         const image = layer.images[i];
         image.x = originX + (screenX - originX) / zoom;
         image.y = originY + (bandTopScreen - originY) / zoom;
