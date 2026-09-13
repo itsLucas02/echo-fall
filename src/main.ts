@@ -2086,16 +2086,91 @@ window.addEventListener('orientationchange', () => {
   window.setTimeout(() => game.scale.refresh(), 250);
 });
 
-// Fullscreen is a big win on phones; hide the button where unsupported.
-const fullscreenButton = document.querySelector<HTMLButtonElement>('#fullscreen-button');
-if (fullscreenButton && document.fullscreenEnabled) {
-  fullscreenButton.addEventListener('click', () => {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen().catch(() => undefined);
-  });
-} else if (fullscreenButton) {
-  fullscreenButton.classList.add('hidden');
+// ── Kill mobile double-tap / pinch zoom ────────────────────────────────────
+// iOS Safari ignores `user-scalable=no`, so guard the gestures directly.
+document.addEventListener('dblclick', (event) => event.preventDefault(), { passive: false });
+['gesturestart', 'gesturechange', 'gestureend'].forEach(type =>
+  document.addEventListener(type, (event) => event.preventDefault(), { passive: false }));
+let lastTapAt = 0;
+let lastTapX = 0;
+let lastTapY = 0;
+document.addEventListener('touchend', (event) => {
+  const touch = event.changedTouches[0];
+  if (!touch) return;
+  const now = Date.now();
+  if (now - lastTapAt < 300 && Math.hypot(touch.clientX - lastTapX, touch.clientY - lastTapY) < 30) {
+    event.preventDefault();
+    lastTapAt = 0;
+    return;
+  }
+  lastTapAt = now;
+  lastTapX = touch.clientX;
+  lastTapY = touch.clientY;
+}, { passive: false });
+
+// Escape hatch: if the browser zoomed anyway, one tap reloads to reset the view.
+const resetView = document.createElement('button');
+resetView.type = 'button';
+resetView.className = 'reset-view';
+resetView.textContent = 'RESET VIEW';
+resetView.hidden = true;
+resetView.addEventListener('click', () => window.location.reload());
+document.body.appendChild(resetView);
+const visualViewport = window.visualViewport;
+const updateZoomChip = () => { resetView.hidden = !visualViewport || visualViewport.scale <= 1.02; };
+visualViewport?.addEventListener('resize', updateZoomChip);
+visualViewport?.addEventListener('scroll', updateZoomChip);
+updateZoomChip();
+
+// ── Fullscreen (real on Android; iOS only permits video fullscreen) ─────────
+const rootElement = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
+const canFullscreen = typeof document.documentElement.requestFullscreen === 'function'
+  || typeof rootElement.webkitRequestFullscreen === 'function';
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function showToast(text: string, ms = 3800) {
+  const element = document.getElementById('message') as (HTMLElement & { _toast?: number }) | null;
+  if (!element) return;
+  element.textContent = text;
+  element.classList.add('visible');
+  window.clearTimeout(element._toast);
+  element._toast = window.setTimeout(() => element.classList.remove('visible'), ms);
 }
+
+async function goFullscreen() {
+  const request = document.documentElement.requestFullscreen?.bind(document.documentElement)
+    ?? rootElement.webkitRequestFullscreen?.bind(rootElement);
+  if (!request) throw new Error('unsupported');
+  await request();
+  try {
+    const orientation = screen.orientation as (ScreenOrientation & { lock?: (o: string) => Promise<void> }) | undefined;
+    if (orientation?.lock) await orientation.lock('landscape');
+  } catch { /* lock is Android-only; iOS never */ }
+}
+
+function fullscreenElement(): Element | null {
+  return document.fullscreenElement ?? (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement ?? null;
+}
+
+async function toggleFullscreen() {
+  if (fullscreenElement()) {
+    const exit = document.exitFullscreen?.bind(document)
+      ?? (document as Document & { webkitExitFullscreen?: () => Promise<void> | void }).webkitExitFullscreen?.bind(document);
+    try { await exit?.(); } catch { /* ignore */ }
+    return;
+  }
+  if (!canFullscreen) {
+    showToast(isIOS
+      ? 'Fullscreen needs Add to Home Screen on iPhone (Share ▸ Add to Home Screen).'
+      : 'Fullscreen is not available in this browser.');
+    return;
+  }
+  try { await goFullscreen(); } catch { showToast('The browser blocked fullscreen.'); }
+}
+
+document.querySelector<HTMLButtonElement>('#fullscreen-button')?.addEventListener('click', () => { void toggleFullscreen(); });
+document.addEventListener('fullscreenchange', () => window.setTimeout(updateRotateGate, 100));
 
 // ── Boot splash + mobile orientation gate ──────────────────────────────────
 const bootEl = document.querySelector<HTMLElement>('#boot');
@@ -2128,12 +2203,14 @@ function finishBoot() {
 window.addEventListener('resize', updateRotateGate);
 window.addEventListener('orientationchange', () => window.setTimeout(updateRotateGate, 300));
 
-document.querySelector('#rotate-start')?.addEventListener('click', async () => {
-  try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); } catch { /* unsupported */ }
-  try {
-    const orientation = screen.orientation as (ScreenOrientation & { lock?: (o: string) => Promise<void> }) | undefined;
-    if (orientation?.lock) await orientation.lock('landscape');
-  } catch { /* iOS Safari doesn't support orientation lock */ }
+const rotateStart = document.querySelector<HTMLButtonElement>('#rotate-start');
+if (rotateStart) rotateStart.textContent = canFullscreen ? 'ENTER FULLSCREEN' : 'CONTINUE';
+rotateStart?.addEventListener('click', async () => {
+  if (canFullscreen && !fullscreenElement()) {
+    try { await goFullscreen(); } catch { /* ignore */ }
+  } else if (!canFullscreen && isIOS) {
+    showToast('Rotate to landscape. For full screen, use Share ▸ Add to Home Screen.');
+  }
   window.setTimeout(updateRotateGate, 400);
 });
 
