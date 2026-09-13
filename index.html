@@ -9,8 +9,36 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23e0a85a' d='M5 2l22 4-9 10 9 10-22 4 9-14z'/%3E%3C/svg%3E" />
     <title>Echofall: Clockwork Run</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      /* Critical, inline: paints correctly before the app stylesheet/JS arrive. */
+      html, body { margin: 0; background: #0b1111; color: #e6eee8; font-family: "Space Grotesk", system-ui, sans-serif; }
+      body.booting .game-shell { visibility: hidden; }
+      #boot, .rotate-gate { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; text-align: center; padding: 24px; background: #0b1111; }
+      #boot .boot-brand, .rotate-gate .boot-brand { color: #e0a85a; font-weight: 700; letter-spacing: .22em; font-size: 16px; }
+      #boot .boot-sub { margin-top: 12px; color: #8fa39b; font: 12px ui-monospace, monospace; letter-spacing: .08em; }
+      .rotate-gate { display: none; }
+      .rotate-gate.show { display: grid; }
+      .rotate-gate .rotate-arrow { font-size: 40px; color: #e0a85a; margin: 14px 0; }
+      .rotate-gate p { color: #b9c8c2; max-width: 320px; margin: 0 auto 18px; font-size: 14px; line-height: 1.5; }
+      .rotate-gate button { min-height: 46px; padding: 0 22px; border: 1px solid #edc48b; border-radius: 3px; color: #171713; background: #e0a85a; font: 600 12px ui-monospace, monospace; letter-spacing: .04em; cursor: pointer; }
+    </style>
   </head>
-  <body>
+  <body class="booting">
+    <div id="boot">
+      <div>
+        <div class="boot-brand">ECHOFALL</div>
+        <div class="boot-sub" id="boot-status">Loading…</div>
+      </div>
+    </div>
+    <div id="rotate-gate" class="rotate-gate">
+      <div>
+        <div class="boot-brand">ECHOFALL</div>
+        <div class="rotate-arrow">⟳</div>
+        <p>Rotate your device to landscape to play.</p>
+        <button id="rotate-start" type="button">ENTER FULLSCREEN</button>
+      </div>
+    </div>
     <main class="game-shell">
       <header class="topbar">
         <div class="brand"><span class="brand-mark" aria-hidden="true"></span><strong>ECHOFALL</strong><small>Clockwork Run</small></div>

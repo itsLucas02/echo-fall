@@ -29,19 +29,27 @@ re-deriving anything.
 
 | Chapter | id | Files (`public/assets/`) | Prompt section |
 | --- | --- | --- | --- |
-| Batu Caverns | `caverns` | `caverns-bg/far/mid/near.png` | Section 4.1 |
-| Tea Terraces | `terraces` | `terraces-bg/far/mid/near.png` | Section 4.2 |
-| Merdeka Ascent | `ascent` | `ascent-bg/far/mid/near.png` | Section 4.3 |
-| Arrival Gate | `arrival` | `malaysia-skyline/midground/foreground.png` | original art |
+| Batu Caverns | `caverns` | `caverns-bg/far/mid/near.webp` | Section 4.1 |
+| Tea Terraces | `terraces` | `terraces-bg/far/mid/near.webp` | Section 4.2 |
+| Merdeka Ascent | `ascent` | `ascent-bg/far/mid/near.webp` | Section 4.3 |
+| Arrival Gate | `arrival` | `malaysia-skyline/midground/foreground.webp` | original art |
 
 - `-bg` = opaque full scene (no alpha).
-- `-far` / `-mid` / `-near` = PNGs with a **transparent** background; elements
+- `-far` / `-mid` / `-near` = images with a **transparent** background; elements
   sit in the lower ~70% so upper areas reveal the layers behind.
-- **Now unused** (see Section 6.3): `level-arrival.png`, `level-caverns.png`,
-  `level-terraces.png`, `level-ascent.png`, `skyline-sky.png`.
+- **Compressed:** all background/parallax art is **WebP (q82), downscaled to
+  720px tall** (~37 MB PNG -> ~3.5 MB total). Source PNGs are recoverable from
+  git history.
+- **Loaded lazily per chapter:** `preload()` loads only the current chapter's
+  four layers (plus the Malaysian stack for Arrival). Textures already resident
+  are skipped, so switching chapters never re-downloads.
 
-Naming rule for new chapters: `<chapterId>-{bg,far,mid,near}.png`, registered in
+Naming rule for new chapters: `<chapterId>-{bg,far,mid,near}.webp`, registered in
 `preload()` in `src/main.ts`.
+
+Painted background/parallax textures are set to **LINEAR** filtering in
+`drawWorld()` (sprites keep nearest-neighbour pixel-art filtering) so the scaled
+art stays smooth rather than blocky.
 
 ---
 
@@ -253,11 +261,11 @@ cover the viewport and re-anchor the parallax/abyss. Trade-off: the background i
 then scaled beyond 1:1, so enable `LINEAR` filtering on the background texture
 (otherwise `pixelArt` nearest-neighbour makes the painted art blocky).
 
-### 6.3 Remove unused assets
+### 6.3 Remove unused assets (done)
 
-`public/assets/level-arrival.png`, `level-caverns.png`, `level-terraces.png`,
-`level-ascent.png`, and `skyline-sky.png` are no longer referenced. Delete to slim
-the repo (history retains them).
+`public/assets/level-*.png` and `skyline-sky.png` were deleted, and all loaded art
+was replaced with compressed WebP (see Section 2). Originals remain in git
+history if ever needed.
 
 ### 6.4 Arrival generated set (optional)
 

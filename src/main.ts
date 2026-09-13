@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import './style.css';
+
 import { sampleEchoFrame, type EchoFrame } from './echo';
 import { completionRank, formatRunTime, loadProgress, recordCompletion, saveProgress, type PlayerProgress } from './progress';
 import {
@@ -205,22 +205,24 @@ class GameScene extends Phaser.Scene {
   private get level() { return LEVELS[this.levelIndex]; }
 
   preload() {
+    this.load.on('progress', (value: number) => setBootStatus(`Loading… ${Math.round(value * 100)}%`));
     this.load.image('courier-source', 'assets/kite-sprite-source.png');
-    this.load.image('malaysia-skyline', 'assets/malaysia-skyline.png');
-    this.load.image('malaysia-midground', 'assets/malaysia-midground.png');
-    this.load.image('malaysia-foreground', 'assets/malaysia-foreground.png');
-    this.load.image('caverns-bg', 'assets/caverns-bg.png');
-    this.load.image('caverns-far', 'assets/caverns-far.png');
-    this.load.image('caverns-mid', 'assets/caverns-mid.png');
-    this.load.image('caverns-near', 'assets/caverns-near.png');
-    this.load.image('terraces-bg', 'assets/terraces-bg.png');
-    this.load.image('terraces-far', 'assets/terraces-far.png');
-    this.load.image('terraces-mid', 'assets/terraces-mid.png');
-    this.load.image('terraces-near', 'assets/terraces-near.png');
-    this.load.image('ascent-bg', 'assets/ascent-bg.png');
-    this.load.image('ascent-far', 'assets/ascent-far.png');
-    this.load.image('ascent-mid', 'assets/ascent-mid.png');
-    this.load.image('ascent-near', 'assets/ascent-near.png');
+    // Load only what the current chapter needs (plus the shared Malaysian stack
+    // for Arrival). Textures already resident from a previous chapter are
+    // skipped, so switching chapters never re-downloads what's cached.
+    const load = (key: string, file: string) => {
+      if (!this.textures.exists(key)) this.load.image(key, file);
+    };
+    if (this.level.id === 'arrival') {
+      load('malaysia-skyline', 'assets/malaysia-skyline.webp');
+      load('malaysia-midground', 'assets/malaysia-midground.webp');
+      load('malaysia-foreground', 'assets/malaysia-foreground.webp');
+    } else {
+      (['bg', 'far', 'mid', 'near'] as const).forEach(part => {
+        const key = `${this.level.id}-${part}`;
+        load(key, `assets/${key}.webp`);
+      });
+    }
   }
 
   create() {
@@ -293,6 +295,8 @@ class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off('resize', this.onResize, this));
     this.showLevelBanner();
     if (!this.hasEverStarted) this.scene.pause();
+    // Reveal the menu only after the canvas has had a couple of frames to draw.
+    requestAnimationFrame(() => requestAnimationFrame(() => finishBoot()));
   }
 
   private lastHint = '';
@@ -462,8 +466,13 @@ class GameScene extends Phaser.Scene {
     const imageScale = HEIGHT / 724;
     const layerWidth = 2172 * imageScale;
 
+    // Painted backgrounds are filtered smoothly (sprites keep pixel-art nearest
+    // filtering) so downscaled art never looks blocky or pixelated.
+    const soft = (key: string) => this.textures.get(key).setFilter(Phaser.Textures.FilterMode.LINEAR);
+
     if (this.level.id === 'arrival') {
       // Arrival keeps the original Malaysian parallax stack, palette-tinted.
+      ['malaysia-skyline', 'malaysia-midground', 'malaysia-foreground'].forEach(soft);
       this.parallaxLayers.push(
         { texture: 'malaysia-skyline', images: [], width: layerWidth, scale: imageScale, rate: .08, depth: -30, alpha: 1, tint, mirror: false },
         { texture: 'malaysia-midground', images: [], width: layerWidth, scale: imageScale, rate: .24, depth: -20, alpha: .88, tint, mirror: false },
@@ -475,6 +484,7 @@ class GameScene extends Phaser.Scene {
       // 540px play band; full-colour, so no palette tint is applied.
       const addGenerated = (key: string, rate: number, depth: number) => {
         const source = this.textures.get(key).getSourceImage() as HTMLImageElement;
+        soft(key);
         const scale = HEIGHT / source.height;
         this.parallaxLayers.push({ texture: key, images: [], width: source.width * scale, scale, rate, depth, alpha: 1, tint: 0xffffff, mirror: true });
       };
@@ -2023,6 +2033,7 @@ renderChips(withDevUnlocks(loadProgress(LEVELS.map(l => l.id))));
 ui.begin.addEventListener('click', () => {
   document.body.classList.add('in-run');
   scene().startGame();
+  updateRotateGate();
 });
 document.querySelector('#resume-button')!.addEventListener('click', () => scene().togglePause(false));
 document.querySelector('#pause-restart-button')!.addEventListener('click', () => scene().restartRun());
@@ -2085,6 +2096,46 @@ if (fullscreenButton && document.fullscreenEnabled) {
 } else if (fullscreenButton) {
   fullscreenButton.classList.add('hidden');
 }
+
+// ── Boot splash + mobile orientation gate ──────────────────────────────────
+const bootEl = document.querySelector<HTMLElement>('#boot');
+const bootStatusEl = document.querySelector<HTMLElement>('#boot-status');
+const rotateGate = document.querySelector<HTMLElement>('#rotate-gate');
+let appReady = false;
+
+function setBootStatus(text: string) {
+  if (bootStatusEl) bootStatusEl.textContent = text;
+}
+
+/** Shows the rotate gate only on a touch device that is in portrait pre-game. */
+function updateRotateGate() {
+  if (!rotateGate) return;
+  const touch = document.body.classList.contains('touch-ui');
+  const started = document.body.classList.contains('in-run');
+  const portrait = window.matchMedia('(orientation: portrait)').matches;
+  rotateGate.classList.toggle('show', appReady && touch && portrait && !started);
+}
+
+/** Called once the first level has rendered: reveal the menu, drop the splash. */
+function finishBoot() {
+  if (appReady) return;
+  appReady = true;
+  document.body.classList.remove('booting');
+  bootEl?.remove();
+  updateRotateGate();
+}
+
+window.addEventListener('resize', updateRotateGate);
+window.addEventListener('orientationchange', () => window.setTimeout(updateRotateGate, 300));
+
+document.querySelector('#rotate-start')?.addEventListener('click', async () => {
+  try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); } catch { /* unsupported */ }
+  try {
+    const orientation = screen.orientation as (ScreenOrientation & { lock?: (o: string) => Promise<void> }) | undefined;
+    if (orientation?.lock) await orientation.lock('landscape');
+  } catch { /* iOS Safari doesn't support orientation lock */ }
+  window.setTimeout(updateRotateGate, 400);
+});
 
 if (import.meta.env.DEV) {
   (window as typeof window & { __echofall?: Phaser.Game }).__echofall = game;
